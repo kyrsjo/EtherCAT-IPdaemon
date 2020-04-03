@@ -519,41 +519,72 @@ OSAL_THREAD_FUNC ecatcheck( void *ptr ) {
     }
 }
 
+//#include <stdio.h>
+//#include <string.h>
 #include <sys/socket.h>
 #include <netinet/in.h>
 #include <netinet/ip.h>
-// Array of servers
-#define NUMIPSERVERS 10
+#include <unistd.h>
+//#include <netdb.h>
+// Array of server slots -- remember we need to wait for TIME_WAIT too!
+#define NUMIPSERVERS 50
 struct IPserverThreads {
-    OSAL_THREAD_HANDLE thread;
     int sockfd;
     struct sockaddr_in servaddr;
     struct sockaddr_in client;
     int connfd;
+
+    pthread_t thread;
+
     char inUse;
 };
 struct IPserverThreads IPservers[NUMIPSERVERS];
+
+#define BUFFLEN 1024
+void chatBot(void* ptr) {
+    //Runs in it's own thread, talking to one client
+    struct IPserverThreads* myThread = (struct IPserverThreads*) ptr;
+
+    char buff[BUFFLEN];
+    memset(buff, 0, BUFFLEN);
+
+    read(myThread->connfd, buff, BUFFLEN-1);
+    printf("GOT: %s", buff);
+
+    memset(buff, 0, BUFFLEN);
+    memcpy(buff, "bye",4);
+
+    write(myThread->connfd, buff, 4);
+
+    close(myThread->connfd);
+    myThread->inUse = 0;
+}
 
 OSAL_THREAD_FUNC printData( void* ptr ) {
     //Print data in memory when hitting ENTER
 
     // IP connection handling and server spinup
     // Inspired by https://www.geeksforgeeks.org/tcp-server-client-implementation-in-c/
-    
+
     (void)ptr; // Not used, reference it to quiet down the compiler
 
     //Initialize IPservers array
-    for (int i = 0; i < NUMIPSERVERS; i++) {
+    memset(IPservers, 0, sizeof(struct IPserverThreads)*NUMIPSERVERS);
+    /*    for (int i = 0; i < NUMIPSERVERS; i++) {
         IPservers[i].inUse = 0;
         memset(&(IPservers[i].servaddr), 0, sizeof(struct sockaddr_in));
         IPservers[i].sockfd = 0;
     }
+    */
 
     while(1) {
         //Find a free IPservers listing
         int ipServerNum = 0;
         for (ipServerNum = 0; ipServerNum < NUMIPSERVERS; ipServerNum++){
-            if (IPservers[ipServerNum].inUse == 0) break;
+            if (IPservers[ipServerNum].inUse == 0) { // Found a free one; let's zero it and break
+                memset(&(IPservers[ipServerNum]), 0, sizeof(struct IPserverThreads));
+                break;
+            }
         }
         if (ipServerNum == NUMIPSERVERS) {
             printf("Too many clients!\n");
@@ -567,11 +598,7 @@ OSAL_THREAD_FUNC printData( void* ptr ) {
         IPservers[ipServerNum].sockfd = socket(AF_INET, SOCK_STREAM, 0);
         if (IPservers[ipServerNum].sockfd == -1) {
             perror("ERROR when opening socket");
-
             IPservers[ipServerNum].inUse == 0;
-            memset(&(IPservers[ipServerNum].servaddr), 0, sizeof(struct sockaddr_in));
-            IPservers[ipServerNum].sockfd = 0;
-
             goto noSock;
         }
 
@@ -585,50 +612,40 @@ OSAL_THREAD_FUNC printData( void* ptr ) {
                   (struct sockaddr*)&(IPservers[ipServerNum].servaddr),
                   sizeof(IPservers[ipServerNum].servaddr))) != 0) {
             perror("ERROR: Socket bind failed");
-
+            close(IPservers[ipServerNum].sockfd);
             IPservers[ipServerNum].inUse == 0;
-            memset(&(IPservers[ipServerNum].servaddr), 0, sizeof(struct sockaddr_in));
-            IPservers[ipServerNum].sockfd = 0;
-
             goto noSock;
         }
 
         //Listen to the socket...
         if ((listen(IPservers[ipServerNum].sockfd, 5)) != 0) {
             perror("ERROR: Socket listen failed");
-
             IPservers[ipServerNum].inUse == 0;
-            memset(&(IPservers[ipServerNum].servaddr), 0, sizeof(struct sockaddr_in));
-            IPservers[ipServerNum].sockfd = 0;
-
             goto noSock;
         }
         printf("listen OK\n");
 
         int addrlen = sizeof(IPservers[ipServerNum].client);
-        
+
         IPservers[ipServerNum].connfd =
             accept(IPservers[ipServerNum].sockfd,
                    (struct sockaddr*)&(IPservers[ipServerNum].client),
                    &addrlen);
-        
+
         if (IPservers[ipServerNum].connfd < 0) {
             perror("ERROR: Server accept connection failed");
-
             IPservers[ipServerNum].inUse == 0;
-            memset(&(IPservers[ipServerNum].servaddr), 0, sizeof(struct sockaddr_in));
-            IPservers[ipServerNum].sockfd = 0;
-            IPservers[ipServerNum].connfd = 0;
+            goto noSock;
         }
 
         printf("accept OK\n");
 
         //Here using Linux pthreads, not OSAL,
         // as we want to do more than just creating the threads
-        
-        
-        //TODO: Spin up a new thread for chatting, which should close it's own socket when done.
-        
+        //
+        // When done, these threads close their socket and set inUse = 0.
+        pthread_create(&(IPservers[ipServerNum].thread), NULL, (void*) &chatBot, (void*) &(IPservers[ipServerNum]));
+
     noSock:
         if (inOP) {
             printf("Hit ENTER to print current state\n");
