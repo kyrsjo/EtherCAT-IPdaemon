@@ -526,11 +526,12 @@ OSAL_THREAD_FUNC ecatcheck( void *ptr ) {
 #include <netinet/ip.h>
 #include <unistd.h>
 //#include <netdb.h>
-// Array of server slots -- remember we need to wait for TIME_WAIT too!
+//Socket on the server
+struct sockaddr_in servaddr;
+int sockfd;
+// Array of server connection slots
 #define NUMIPSERVERS 50
 struct IPserverThreads {
-    int sockfd;
-    struct sockaddr_in servaddr;
     struct sockaddr_in client;
     int connfd;
 
@@ -577,6 +578,33 @@ OSAL_THREAD_FUNC printData( void* ptr ) {
     }
     */
 
+    //Create the server socket...
+    sockfd = socket(AF_INET, SOCK_STREAM, 0);
+    if (sockfd == -1) {
+        perror("ERROR when opening socket");
+        exit(1);
+    }
+
+    //Set server IP and port
+    servaddr.sin_family = AF_INET;
+    servaddr.sin_addr.s_addr = htonl(INADDR_ANY);
+    servaddr.sin_port = htons(4200);
+
+    // Binding newly created socket to given IP and verification
+    if ((bind(sockfd, (struct sockaddr*)&servaddr, sizeof(servaddr))) != 0) {
+        perror("ERROR: Socket bind failed");
+        close(sockfd);
+        exit(1);
+    }
+
+    //Listen to the socket...
+    if ((listen(sockfd, 5)) != 0) {
+        perror("ERROR: Socket listen failed");
+        exit(1);
+    }
+    printf("listen OK\n");
+
+
     while(1) {
         //Find a free IPservers listing
         int ipServerNum = 0;
@@ -594,43 +622,8 @@ OSAL_THREAD_FUNC printData( void* ptr ) {
         IPservers[ipServerNum].inUse = 1;
         printf("ipServerNum = %d \n", ipServerNum);
 
-        //Listen for a new connection...
-        IPservers[ipServerNum].sockfd = socket(AF_INET, SOCK_STREAM, 0);
-        if (IPservers[ipServerNum].sockfd == -1) {
-            perror("ERROR when opening socket");
-            IPservers[ipServerNum].inUse == 0;
-            goto noSock;
-        }
-
-        //Set server IP and port
-        IPservers[ipServerNum].servaddr.sin_family = AF_INET;
-        IPservers[ipServerNum].servaddr.sin_addr.s_addr = htonl(INADDR_ANY);
-        IPservers[ipServerNum].servaddr.sin_port = htons(4200);
-
-        // Binding newly created socket to given IP and verification
-        if ((bind(IPservers[ipServerNum].sockfd,
-                  (struct sockaddr*)&(IPservers[ipServerNum].servaddr),
-                  sizeof(IPservers[ipServerNum].servaddr))) != 0) {
-            perror("ERROR: Socket bind failed");
-            close(IPservers[ipServerNum].sockfd);
-            IPservers[ipServerNum].inUse == 0;
-            goto noSock;
-        }
-
-        //Listen to the socket...
-        if ((listen(IPservers[ipServerNum].sockfd, 5)) != 0) {
-            perror("ERROR: Socket listen failed");
-            IPservers[ipServerNum].inUse == 0;
-            goto noSock;
-        }
-        printf("listen OK\n");
-
         int addrlen = sizeof(IPservers[ipServerNum].client);
-
-        IPservers[ipServerNum].connfd =
-            accept(IPservers[ipServerNum].sockfd,
-                   (struct sockaddr*)&(IPservers[ipServerNum].client),
-                   &addrlen);
+        IPservers[ipServerNum].connfd = accept(sockfd, (struct sockaddr*)&(IPservers[ipServerNum].client), &addrlen);
 
         if (IPservers[ipServerNum].connfd < 0) {
             perror("ERROR: Server accept connection failed");
