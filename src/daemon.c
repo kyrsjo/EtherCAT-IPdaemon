@@ -22,10 +22,12 @@
 #define NCYCLE 100000
 
 //The global IOmap into which all the process data is mapped
-char IOmap[4096];
-// Mapping between index:subindex to offsets into the global IOmap
+char IOmap[4096]; //TODO: Verify map size
+pthread_mutex_t lock; //Lock for the IOmap;
 
-struct mappings_PDO{
+
+// Mapping between index:subindex to offsets into the global IOmap
+struct mappings_PDO {
     //Static name of PDO
     uint16 slaveIdx;
     uint16 idx;
@@ -51,11 +53,10 @@ volatile int wkc; // Don't think this really need volatile, as the CPU should gu
 boolean inOP;
 uint8 currentgroup = 0;
 
-OSAL_THREAD_HANDLE thread1;
-OSAL_THREAD_HANDLE thread2;
-pthread_mutex_t lock;
+OSAL_THREAD_HANDLE thread_PLCwatch;
+OSAL_THREAD_HANDLE thread_communicate;
 
-void daemon() {
+void PLCdaemon() {
     //This periodically synchronizes the PLC and the IOmap
 
     /* cyclic loop */
@@ -423,7 +424,7 @@ void initialize(char* ifname) {
                 printf("Operational state reached for all slaves.\n");
                 inOP = TRUE;
 
-                daemon();
+                PLCdaemon();
 
                 inOP = FALSE;
             }
@@ -518,10 +519,117 @@ OSAL_THREAD_FUNC ecatcheck( void *ptr ) {
     }
 }
 
+#include <sys/socket.h>
+#include <netinet/in.h>
+#include <netinet/ip.h>
+// Array of servers
+#define NUMIPSERVERS 10
+struct IPserverThreads {
+    OSAL_THREAD_HANDLE thread;
+    int sockfd;
+    struct sockaddr_in servaddr;
+    struct sockaddr_in client;
+    int connfd;
+    char inUse;
+};
+struct IPserverThreads IPservers[NUMIPSERVERS];
+
 OSAL_THREAD_FUNC printData( void* ptr ) {
     //Print data in memory when hitting ENTER
-    (void)ptr;                  /* Not used, reference it to quiet down the compiler */
+
+    // IP connection handling and server spinup
+    // Inspired by https://www.geeksforgeeks.org/tcp-server-client-implementation-in-c/
+    
+    (void)ptr; // Not used, reference it to quiet down the compiler
+
+    //Initialize IPservers array
+    for (int i = 0; i < NUMIPSERVERS; i++) {
+        IPservers[i].inUse = 0;
+        memset(&(IPservers[i].servaddr), 0, sizeof(struct sockaddr_in));
+        IPservers[i].sockfd = 0;
+    }
+
     while(1) {
+        //Find a free IPservers listing
+        int ipServerNum = 0;
+        for (ipServerNum = 0; ipServerNum < NUMIPSERVERS; ipServerNum++){
+            if (IPservers[ipServerNum].inUse == 0) break;
+        }
+        if (ipServerNum == NUMIPSERVERS) {
+            printf("Too many clients!\n");
+            goto noSock;
+        }
+
+        IPservers[ipServerNum].inUse = 1;
+        printf("ipServerNum = %d \n", ipServerNum);
+
+        //Listen for a new connection...
+        IPservers[ipServerNum].sockfd = socket(AF_INET, SOCK_STREAM, 0);
+        if (IPservers[ipServerNum].sockfd == -1) {
+            perror("ERROR when opening socket");
+
+            IPservers[ipServerNum].inUse == 0;
+            memset(&(IPservers[ipServerNum].servaddr), 0, sizeof(struct sockaddr_in));
+            IPservers[ipServerNum].sockfd = 0;
+
+            goto noSock;
+        }
+
+        //Set server IP and port
+        IPservers[ipServerNum].servaddr.sin_family = AF_INET;
+        IPservers[ipServerNum].servaddr.sin_addr.s_addr = htonl(INADDR_ANY);
+        IPservers[ipServerNum].servaddr.sin_port = htons(4200);
+
+        // Binding newly created socket to given IP and verification
+        if ((bind(IPservers[ipServerNum].sockfd,
+                  (struct sockaddr*)&(IPservers[ipServerNum].servaddr),
+                  sizeof(IPservers[ipServerNum].servaddr))) != 0) {
+            perror("ERROR: Socket bind failed");
+
+            IPservers[ipServerNum].inUse == 0;
+            memset(&(IPservers[ipServerNum].servaddr), 0, sizeof(struct sockaddr_in));
+            IPservers[ipServerNum].sockfd = 0;
+
+            goto noSock;
+        }
+
+        //Listen to the socket...
+        if ((listen(IPservers[ipServerNum].sockfd, 5)) != 0) {
+            perror("ERROR: Socket listen failed");
+
+            IPservers[ipServerNum].inUse == 0;
+            memset(&(IPservers[ipServerNum].servaddr), 0, sizeof(struct sockaddr_in));
+            IPservers[ipServerNum].sockfd = 0;
+
+            goto noSock;
+        }
+        printf("listen OK\n");
+
+        int addrlen = sizeof(IPservers[ipServerNum].client);
+        
+        IPservers[ipServerNum].connfd =
+            accept(IPservers[ipServerNum].sockfd,
+                   (struct sockaddr*)&(IPservers[ipServerNum].client),
+                   &addrlen);
+        
+        if (IPservers[ipServerNum].connfd < 0) {
+            perror("ERROR: Server accept connection failed");
+
+            IPservers[ipServerNum].inUse == 0;
+            memset(&(IPservers[ipServerNum].servaddr), 0, sizeof(struct sockaddr_in));
+            IPservers[ipServerNum].sockfd = 0;
+            IPservers[ipServerNum].connfd = 0;
+        }
+
+        printf("accept OK\n");
+
+        //Here using Linux pthreads, not OSAL,
+        // as we want to do more than just creating the threads
+        
+        
+        //TODO: Spin up a new thread for chatting, which should close it's own socket when done.
+        
+    noSock:
         if (inOP) {
             printf("Hit ENTER to print current state\n");
             getchar();
@@ -579,8 +687,8 @@ int main(int argc, char *argv[]) {
         //Note: This is technically a library bug;
         // function pointers should not be declared as void*!
         // https://isocpp.org/wiki/faq/pointers-to-members#cant-cvt-fnptr-to-voidptr
-        osal_thread_create(&thread1, 128000, (void*) &ecatcheck, (void*) &ctime);
-        osal_thread_create(&thread2, 128000, (void*) &printData, (void*) &ctime);
+        osal_thread_create(&thread_PLCwatch,    128000, (void*) &ecatcheck, (void*) &ctime);
+        osal_thread_create(&thread_communicate, 128000, (void*) &printData, (void*) &ctime);
 
         /* start cyclic part */
         initialize(argv[1]);
