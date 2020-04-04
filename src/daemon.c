@@ -526,9 +526,11 @@ OSAL_THREAD_FUNC ecatcheck( void *ptr ) {
 #include <netinet/ip.h>
 #include <unistd.h>
 //#include <netdb.h>
+#include <arpa/inet.h>
 //Socket on the server
 struct sockaddr_in servaddr;
 int sockfd;
+#define PORT 4200
 // Array of server connection slots
 #define NUMIPSERVERS 50
 struct IPserverThreads {
@@ -536,32 +538,45 @@ struct IPserverThreads {
     int connfd;
 
     pthread_t thread;
-
+    int  ipServerNum;
     char inUse;
 };
 struct IPserverThreads IPservers[NUMIPSERVERS];
 
 #define BUFFLEN 1024
-void chatBot(void* ptr) {
+void chatThread(void* ptr) {
     //Runs in it's own thread, talking to one client
     struct IPserverThreads* myThread = (struct IPserverThreads*) ptr;
 
     char buff[BUFFLEN];
     memset(buff, 0, BUFFLEN);
 
-    read(myThread->connfd, buff, BUFFLEN-1);
-    printf("GOT: %s", buff);
+    while (1) {
+        int numBytes = read(myThread->connfd, buff, BUFFLEN);
+        if (numBytes >= BUFFLEN) {
+            printf("ERROR, message too long");
+            goto endcom;
+        }
+        printf("GOT: %s\n", buff);
 
+        if( strncmp(buff, "bye", 3) == 0 ) {
+            goto endcom;
+        }
+
+        memset(buff,0,numBytes);
+    }
+
+ endcom:
+    printf("Finished: -- slot %d disconnecting from %s \n", myThread->ipServerNum, inet_ntoa(myThread->client.sin_addr));
     memset(buff, 0, BUFFLEN);
-    memcpy(buff, "bye",4);
-
+    memcpy(buff, "bye\n",4);
     write(myThread->connfd, buff, 4);
 
     close(myThread->connfd);
     myThread->inUse = 0;
 }
 
-OSAL_THREAD_FUNC printData( void* ptr ) {
+OSAL_THREAD_FUNC mainIPserver( void* ptr ) {
     //Print data in memory when hitting ENTER
 
     // IP connection handling and server spinup
@@ -588,11 +603,12 @@ OSAL_THREAD_FUNC printData( void* ptr ) {
     //Set server IP and port
     servaddr.sin_family = AF_INET;
     servaddr.sin_addr.s_addr = htonl(INADDR_ANY);
-    servaddr.sin_port = htons(4200);
+    servaddr.sin_port = htons(PORT);
 
     // Binding newly created socket to given IP and verification
     if ((bind(sockfd, (struct sockaddr*)&servaddr, sizeof(servaddr))) != 0) {
         perror("ERROR: Socket bind failed");
+        fprintf(stderr, "if 'netstat | grep %d' shows TIME_WAIT, please wait for the OS timeout to finish\n", PORT);
         close(sockfd);
         exit(1);
     }
@@ -611,6 +627,7 @@ OSAL_THREAD_FUNC printData( void* ptr ) {
         for (ipServerNum = 0; ipServerNum < NUMIPSERVERS; ipServerNum++){
             if (IPservers[ipServerNum].inUse == 0) { // Found a free one; let's zero it and break
                 memset(&(IPservers[ipServerNum]), 0, sizeof(struct IPserverThreads));
+                IPservers[ipServerNum].ipServerNum = ipServerNum;
                 break;
             }
         }
@@ -631,13 +648,13 @@ OSAL_THREAD_FUNC printData( void* ptr ) {
             goto noSock;
         }
 
-        printf("accept OK\n");
+        printf("accept OK -- slot %d connected to %s \n", ipServerNum, inet_ntoa(IPservers[ipServerNum].client.sin_addr));
 
         //Here using Linux pthreads, not OSAL,
         // as we want to do more than just creating the threads
         //
         // When done, these threads close their socket and set inUse = 0.
-        pthread_create(&(IPservers[ipServerNum].thread), NULL, (void*) &chatBot, (void*) &(IPservers[ipServerNum]));
+        pthread_create(&(IPservers[ipServerNum].thread), NULL, (void*) &chatThread, (void*) &(IPservers[ipServerNum]));
 
     noSock:
         if (inOP) {
@@ -697,8 +714,8 @@ int main(int argc, char *argv[]) {
         //Note: This is technically a library bug;
         // function pointers should not be declared as void*!
         // https://isocpp.org/wiki/faq/pointers-to-members#cant-cvt-fnptr-to-voidptr
-        osal_thread_create(&thread_PLCwatch,    128000, (void*) &ecatcheck, (void*) &ctime);
-        osal_thread_create(&thread_communicate, 128000, (void*) &printData, (void*) &ctime);
+        osal_thread_create(&thread_PLCwatch,    128000, (void*) &ecatcheck,    (void*) &ctime);
+        osal_thread_create(&thread_communicate, 128000, (void*) &mainIPserver, (void*) &ctime);
 
         /* start cyclic part */
         initialize(argv[1]);
