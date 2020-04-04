@@ -50,9 +50,14 @@ struct mappings_PDO* mapping_in  = NULL; // Inputs, i.e. reading of voltages, en
 int expectedWKC;
 boolean needlf;
 volatile int wkc; // Don't think this really need volatile, as the CPU should guarantee cache-coherency
-boolean inOP;
 uint8 currentgroup = 0;
 
+// Global flags
+boolean inOP;
+boolean updating;
+boolean doQuit;
+
+//Persistent threads
 OSAL_THREAD_HANDLE thread_PLCwatch;
 OSAL_THREAD_HANDLE thread_communicate;
 
@@ -218,7 +223,11 @@ struct mappings_PDO* fill_mapping_list (uint16 slave, struct mappings_PDO* map_t
                         map_tail->bitlen   = bitlen;
 
                         map_tail->dataType = OElist.DataType[obj_subidx];
-                        map_tail->name     = NULL;
+
+                        size_t nameSize    = sizeof(char)*( strnlen(OElist.Name[obj_subidx],EC_MAXNAME) + 1 );
+                        map_tail->name     = malloc(nameSize);
+                        memset (map_tail->name, 0, nameSize);
+                        strncpy(map_tail->name, OElist.Name[obj_subidx], nameSize);
 
                         //Last entry is always blank (trimmed off at the end)
                         map_tail->next = (struct mappings_PDO*) malloc(sizeof(struct mappings_PDO));
@@ -423,7 +432,7 @@ void initialize(char* ifname) {
             if (ec_slave[0].state == EC_STATE_OPERATIONAL ) {
                 printf("Operational state reached for all slaves.\n");
                 inOP = TRUE;
-
+                updating = TRUE;
                 PLCdaemon();
 
                 inOP = FALSE;
@@ -469,6 +478,7 @@ OSAL_THREAD_FUNC ecatcheck( void *ptr ) {
                printf("\n");
             }
             /* one ore more slaves are not responding */
+            updating = FALSE;
             ec_group[currentgroup].docheckstate = FALSE;
             ec_readstate();
             for (uint16 slave = 1; slave <= ec_slavecount; slave++) {
@@ -512,8 +522,10 @@ OSAL_THREAD_FUNC ecatcheck( void *ptr ) {
                   }
                }
             }
-            if(!ec_group[currentgroup].docheckstate)
-               printf("OK : all slaves resumed OPERATIONAL.\n");
+            if(!ec_group[currentgroup].docheckstate) {
+                printf("OK : all slaves resumed OPERATIONAL.\n");
+                updating = TRUE;
+            }
         }
         osal_usleep(10000);
     }
@@ -544,33 +556,167 @@ struct IPserverThreads {
 struct IPserverThreads IPservers[NUMIPSERVERS];
 
 #define BUFFLEN 1024
+int writeMapping(char* buff_out, struct mappings_PDO* mapping, int connfd) {
+    int numChars = snprintf(buff_out, BUFFLEN,
+                            "  [0x%4.4X.%1d] %d 0x%4.4X:0x%2.2X 0x%2.2X %-12s %s\n",
+                            mapping->offset, mapping->bitoff,
+                            mapping->slaveIdx, mapping->idx, mapping->subidx,
+                            mapping->bitlen, dtype2string(mapping->dataType), mapping->name);
+    if (numChars < 0 || numChars >= BUFFLEN) {
+        memset(buff_out,0,BUFFLEN);
+        snprintf(buff_out, BUFFLEN,
+                 "err: Internal in writeMapping; numChars = %d\n", numChars);
+        return 1;
+    }
+    write(connfd, buff_out, BUFFLEN);
+    memset(buff_out, 0, numChars); //Don't need to zero everything every time
+}
 void chatThread(void* ptr) {
     //Runs in it's own thread, talking to one client
     struct IPserverThreads* myThread = (struct IPserverThreads*) ptr;
 
-    char buff[BUFFLEN];
-    memset(buff, 0, BUFFLEN);
+    char buff_in[BUFFLEN];
+    char buff_out[BUFFLEN];
+    memset(buff_in,  0, BUFFLEN);
+    memset(buff_out, 0, BUFFLEN);
 
     while (1) {
-        int numBytes = read(myThread->connfd, buff, BUFFLEN);
+        int numBytes = read(myThread->connfd, buff_in, BUFFLEN);
         if (numBytes >= BUFFLEN) {
+            //Note: Last byte in buff should always be \0.
             printf("ERROR, message too long");
             goto endcom;
         }
-        printf("GOT: %s\n", buff);
+        printf("GOT: %s\n", buff_in);
 
-        if( strncmp(buff, "bye", 3) == 0 ) {
+        // Command parsing
+        if      (!strncmp(buff_in, "bye",      3))  {  // bye
+            //Terminate this connection
             goto endcom;
         }
+        else if (!strncmp(buff_in, "quit",     4))  {  // quit
+            printf("quit from slot %d address %s \n", myThread->ipServerNum, inet_ntoa(myThread->client.sin_addr));
+            close(myThread->connfd);
+            close(sockfd);
+            exit(0); //UGLY
+            //doQuit = TRUE;
 
-        memset(buff,0,numBytes);
+            goto endcom;
+        }
+        else if (!strncmp(buff_in, "dump",    4))  {  // dump
+            //dump the current raw IOmap content
+            if (!inOP || !updating) {
+                strncpy(buff_out, "err: not inOP or not updating\n", BUFFLEN);
+                write(myThread->connfd, buff_out, BUFFLEN);
+                memset(buff_out, 0, BUFFLEN);
+            }
+            else {
+                pthread_mutex_lock(&lock);
+
+                snprintf(buff_out, BUFFLEN, "  T:%" PRId64 ";\n",ec_DCtime);
+                write(myThread->connfd, buff_out, BUFFLEN);
+                memset(buff_out, 0, BUFFLEN);
+
+                for (uint16 slave = 1; slave <= ec_slavecount; slave++) {
+                    int buffUsed = 0;
+
+                    buffUsed += snprintf(buff_out+buffUsed, BUFFLEN-buffUsed, "  slave[%d]:", slave);
+                    buffUsed += snprintf(buff_out+buffUsed, BUFFLEN-buffUsed, " O:");
+
+                    int nChars = ec_slave[slave].Obytes;
+                    if (nChars==0 && ec_slave[slave].Obits > 0) nChars = 1;
+                    for(int j = 0 ; j < nChars ; j++) {
+                        buffUsed +=snprintf(buff_out+buffUsed, BUFFLEN-buffUsed,
+                                            " %2.2x", *(ec_slave[slave].outputs + j));
+                    }
+
+                    buffUsed += snprintf(buff_out+buffUsed, BUFFLEN-buffUsed, " I:");
+
+                    nChars = ec_slave[slave].Ibytes;
+                    if (nChars==0 && ec_slave[slave].Ibits > 0) nChars = 1;
+                    for(int j = 0 ; j < nChars ; j++) {
+                        buffUsed +=snprintf(buff_out+buffUsed, BUFFLEN-buffUsed,
+                                            " %2.2x", *(ec_slave[slave].inputs + j));
+                    }
+
+                    buffUsed += snprintf(buff_out+buffUsed, BUFFLEN-buffUsed, "\n", slave);
+
+                    if (buffUsed >= BUFFLEN) {
+                        printf("ERROR!");
+                        exit(1);
+                    }
+                    write(myThread->connfd, buff_out, BUFFLEN);
+                    memset(buff_out, 0, BUFFLEN);
+                }
+                pthread_mutex_unlock(&lock);
+            }
+        }
+        else if (!strncmp(buff_in, "meta all", 8))  {  // meta all
+            //Metadata about all slaves/indexes/subindexes
+            struct mappings_PDO* mapping_active;
+
+            strncpy(buff_out, "OUTPUTS:\n", BUFFLEN);
+            write(myThread->connfd, buff_out, BUFFLEN);
+
+            mapping_active = mapping_out;
+            while (mapping_active->bitlen > 0) {
+                writeMapping(buff_out, mapping_active, myThread->connfd);
+                mapping_active = mapping_active->next;
+            }
+
+            strncpy(buff_out, "INPUTS:\n", BUFFLEN);
+            write(myThread->connfd, buff_out, BUFFLEN);
+            memset(buff_out,0,BUFFLEN);
+
+            mapping_active = mapping_in;
+            while (mapping_active->bitlen > 0) {
+                writeMapping(buff_out, mapping_active, myThread->connfd);
+                mapping_active = mapping_active->next;
+            }
+        }
+        else if (!strncmp(buff_in, "meta ",    5))  {  // meta slave:idx:subidx
+            //Metadata about a given slave or all slaves
+            uint16 slave  = 0;
+            uint16 idx    = 0;
+            uint8  subidx = 0;
+            if (sscanf(buff_in,"info %hi:%hx:%hhx", &slave, &idx, &subidx) == 3){
+                printf("%d:%x:%x\n", slave,idx,subidx);
+            }
+            else {
+                strncpy(buff_out, "err: bad args\n", BUFFLEN);
+                write(myThread->connfd, buff_out, BUFFLEN);
+            }
+
+            //struct mappings_PDO* data = get_address(2, 0x6000, 0x11, mapping_in);
+            //printf("[0x%4.4X.%1d] 0x%2.2X; VALUE=", data->offset, data->bitoff, data->bitlen);
+            //int16* i16 = NULL;
+            //i16 = (int16*) &(IOmap[data->offset]);
+            //printf("%d\n", *i16);
+
+        }
+        else if (!strncmp(buff_in, "get ",     4))  {  // get slave:idx:subidx
+            //int slave = 0;
+        }
+        else {                                      // (unknown command)
+            strncpy(buff_out,"err: unknown command\n",BUFFLEN);
+            write(myThread->connfd, buff_out, BUFFLEN);
+            memset(buff_out,0,BUFFLEN);
+        }
+
+        //Tell the client that the response is finished
+        strncpy(buff_out,"ok\n",BUFFLEN);
+        write(myThread->connfd, buff_out, BUFFLEN);
+
+        //Reset the buffer before the next round
+        memset(buff_in,0,numBytes);
     }
 
  endcom:
     printf("Finished: -- slot %d disconnecting from %s \n", myThread->ipServerNum, inet_ntoa(myThread->client.sin_addr));
-    memset(buff, 0, BUFFLEN);
-    memcpy(buff, "bye\n",4);
-    write(myThread->connfd, buff, 4);
+    memset(buff_out, 0, BUFFLEN);
+    
+    strncpy(buff_out, "bye\n", BUFFLEN);
+    write(myThread->connfd, buff_out, 4);
 
     close(myThread->connfd);
     myThread->inUse = 0;
@@ -637,7 +783,6 @@ OSAL_THREAD_FUNC mainIPserver( void* ptr ) {
         }
 
         IPservers[ipServerNum].inUse = 1;
-        printf("ipServerNum = %d \n", ipServerNum);
 
         int addrlen = sizeof(IPservers[ipServerNum].client);
         IPservers[ipServerNum].connfd = accept(sockfd, (struct sockaddr*)&(IPservers[ipServerNum].client), &addrlen);
@@ -648,15 +793,15 @@ OSAL_THREAD_FUNC mainIPserver( void* ptr ) {
             goto noSock;
         }
 
-        printf("accept OK -- slot %d connected to %s \n", ipServerNum, inet_ntoa(IPservers[ipServerNum].client.sin_addr));
+        printf("IP server slot %d connected to host %s \n", ipServerNum, inet_ntoa(IPservers[ipServerNum].client.sin_addr));
 
         //Here using Linux pthreads, not OSAL,
-        // as we want to do more than just creating the threads
-        //
-        // When done, these threads close their socket and set inUse = 0.
+        // because we want to do more than just creating the threads.
+        // When done, these threads close their connection and set inUse = 0.
         pthread_create(&(IPservers[ipServerNum].thread), NULL, (void*) &chatThread, (void*) &(IPservers[ipServerNum]));
 
     noSock:
+        /*
         if (inOP) {
             printf("Hit ENTER to print current state\n");
             getchar();
@@ -697,9 +842,8 @@ OSAL_THREAD_FUNC mainIPserver( void* ptr ) {
 
             pthread_mutex_unlock(&lock);
         }
-        else {
-            osal_usleep(10000);
-        }
+        */
+        osal_usleep(10000);
     }
 }
 
@@ -709,6 +853,8 @@ int main(int argc, char *argv[]) {
     if (argc == 2) {
         // Read config file
         //TODO
+
+        doQuit = FALSE;
 
         /* create thread to handle slave error handling in OP */
         //Note: This is technically a library bug;
