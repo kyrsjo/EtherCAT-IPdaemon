@@ -25,6 +25,10 @@
 char IOmap[4096]; //TODO: Verify map size
 pthread_mutex_t lock; //Lock for the IOmap;
 
+#include <signal.h>
+//Set to 1 if we got a control+C interupt
+//Also set to 1 if an IP client calls quit
+volatile sig_atomic_t gotCtrlC = 0;
 
 // Mapping between index:subindex to offsets into the global IOmap
 struct mappings_PDO {
@@ -55,31 +59,33 @@ uint8 currentgroup = 0;
 // Global flags
 boolean inOP;
 boolean updating;
-boolean doQuit;
 
 //Persistent threads
 OSAL_THREAD_HANDLE thread_PLCwatch;
 OSAL_THREAD_HANDLE thread_communicate;
 
-void PLCdaemon() {
+void ecat_PLCdaemon() {
     //This periodically synchronizes the PLC and the IOmap
 
     /* cyclic loop */
-    for(int i = 1; i <= NCYCLE; i++) {
+    while(TRUE) {
 
         pthread_mutex_lock(&lock);
         ec_send_processdata();
         wkc = ec_receive_processdata(EC_TIMEOUTRET);
         pthread_mutex_unlock(&lock);
 
+        //Here we could in principle do some controlling
+
         osal_usleep(5000);
 
+        if(gotCtrlC) break;
     }
+    printf("Caught a control+c signal, shutting down now.\n");
 }
 
 // Copied from test/linux/slaveinfo/slaveinfo.c::dtype2string()
-char hstr[1024];
-char* dtype2string(uint16 dtype) {
+char* dtype2string(uint16 dtype, char* hstr) {
     switch(dtype) {
     case ECT_BOOLEAN:
         sprintf(hstr, "BOOLEAN");
@@ -161,10 +167,12 @@ struct mappings_PDO* fill_mapping_list (uint16 slave, struct mappings_PDO* map_t
     // This code is is very close to test/linux/slaveinfo/slaveinfo.c::si_PDOassign()
     // Returns the current tail of the list, or NULL if there was an error
 
-    // Note that I am assuming bitoffset = 0 at the beginning of every SM (aka. PDOassign).
-    int bsize = 0; // Size of SM in bits
+    char hstr[1024]; // String buffer for output
 
-    int rdl = 0; // Lenght of last read
+    // Note that I am assuming bitoffset = 0 at the beginning of every SM (aka. PDOassign).
+    int bsize = 0;   // Size of SM in bits
+
+    int rdl = 0;     // Length of last read
 
     //How many PDOs? (index PDOassign:0)
     uint16 rdat = 0;
@@ -236,7 +244,7 @@ struct mappings_PDO* fill_mapping_list (uint16 slave, struct mappings_PDO* map_t
 
                         printf("[0x%4.4X.%1d] %d 0x%4.4X:0x%2.2X 0x%2.2X %-12s %s\n",
                                abs_offset, abs_bit, slave, obj_idx, obj_subidx, bitlen,
-                               dtype2string(OElist.DataType[obj_subidx]), OElist.Name[obj_subidx]);
+                               dtype2string(OElist.DataType[obj_subidx], hstr), OElist.Name[obj_subidx]);
                     }
                     bsize += bitlen;
                 }
@@ -253,7 +261,7 @@ struct mappings_PDO* fill_mapping_list (uint16 slave, struct mappings_PDO* map_t
     return map_tail;
 }
 
-int setup_mappings() {
+int ecat_setup_mappings() {
     //Function to setup the mapping from slave/indx/subindx to memory address
     // It is assumed that we can find everything over CoE, i.e. the slaves supprt the mailbox protocol.
     // Return: 1 if all OK, 0 in case of error
@@ -342,9 +350,7 @@ int setup_mappings() {
         }
     }
 
-    return 1;
-
-    //TODO: create global arrays and fill them, similar to what was done in slaveinfo.c
+    return 1; //Success!
 }
 struct mappings_PDO* get_address(uint16 slaveID, uint16 idx, uint8 subidx, struct mappings_PDO* head){
     //Function to extract the relevant link of a mappings_PDO list,
@@ -368,7 +374,7 @@ struct mappings_PDO* get_address(uint16 slaveID, uint16 idx, uint8 subidx, struc
     return NULL; // Nothing was found.
 }
 
-void initialize(char* ifname) {
+void ecat_initialize(char* ifname) {
     int chk;
 
     int slaveID = 2;
@@ -406,7 +412,7 @@ void initialize(char* ifname) {
 
             printf("segments : %d : %d %d %d %d\n",ec_group[0].nsegments ,ec_group[0].IOsegment[0],ec_group[0].IOsegment[1],ec_group[0].IOsegment[2],ec_group[0].IOsegment[3]);
 
-            if(!setup_mappings()) {
+            if(!ecat_setup_mappings()) {
                 fprintf(stderr, "Error in setup_mappings()\n");
                 exit(1);
             }
@@ -433,7 +439,7 @@ void initialize(char* ifname) {
                 printf("Operational state reached for all slaves.\n");
                 inOP = TRUE;
                 updating = TRUE;
-                PLCdaemon();
+                ecat_PLCdaemon();
 
                 inOP = FALSE;
             }
@@ -460,7 +466,7 @@ void initialize(char* ifname) {
         ec_close();
     }
     else {
-        printf("No socket connection on %s\nExcecute as root\n",ifname);
+        printf("No socket connection on %s\nPlease excecute as root!\n",ifname);
     }
 
 }
@@ -468,8 +474,8 @@ void initialize(char* ifname) {
 
 //Function to check that all slaves are alive,
 // and reinitialize them if needed.
-OSAL_THREAD_FUNC ecatcheck( void *ptr ) {
-    (void)ptr;                  /* Not used, reference it to quiet down the compiler */
+OSAL_THREAD_FUNC ecat_check( void *ptr ) {
+    (void)ptr; // Not used, reference it to quiet down the compiler
 
     while(1) {
         if( inOP && ((wkc < expectedWKC) || ec_group[currentgroup].docheckstate)) {
@@ -557,28 +563,35 @@ struct IPserverThreads IPservers[NUMIPSERVERS];
 
 #define BUFFLEN 1024
 int writeMapping(char* buff_out, struct mappings_PDO* mapping, int connfd) {
+    //Helper function for chatThread()
+    char hstr[1024]; // String buffer for output
     int numChars = snprintf(buff_out, BUFFLEN,
                             "  [0x%4.4X.%1d] %d 0x%4.4X:0x%2.2X 0x%2.2X %-12s %s\n",
                             mapping->offset, mapping->bitoff,
                             mapping->slaveIdx, mapping->idx, mapping->subidx,
-                            mapping->bitlen, dtype2string(mapping->dataType), mapping->name);
+                            mapping->bitlen, dtype2string(mapping->dataType, hstr), mapping->name);
     if (numChars < 0 || numChars >= BUFFLEN) {
         memset(buff_out,0,BUFFLEN);
         snprintf(buff_out, BUFFLEN,
                  "err: Internal in writeMapping; numChars = %d\n", numChars);
         return 1;
     }
-    write(connfd, buff_out, BUFFLEN);
+    write(connfd, buff_out, numChars);
     memset(buff_out, 0, numChars); //Don't need to zero everything every time
 }
 void chatThread(void* ptr) {
     //Runs in it's own thread, talking to one client
+    // NOTE: To test with TELNET client, LINEMODE must be used!
     struct IPserverThreads* myThread = (struct IPserverThreads*) ptr;
 
     char buff_in[BUFFLEN];
     char buff_out[BUFFLEN];
-    memset(buff_in,  0, BUFFLEN);
-    memset(buff_out, 0, BUFFLEN);
+    memset(buff_in,       0, BUFFLEN);
+    memset(buff_out,      0, BUFFLEN);
+
+    boolean didRepeat     = FALSE;
+    char    buff_in_prev[BUFFLEN];
+    memset(buff_in_prev,  0, BUFFLEN);
 
     while (1) {
         int numBytes = read(myThread->connfd, buff_in, BUFFLEN);
@@ -587,7 +600,22 @@ void chatThread(void* ptr) {
             printf("ERROR, message too long");
             goto endcom;
         }
-        printf("GOT: %s\n", buff_in);
+        printf("GOT: (%d) '%s'\n", strlen(buff_in), buff_in);
+
+        //Replay last command
+        if (buff_in[0] =='\n' || buff_in[0] == '\r')  {  // linebreak -> replay previous cmd
+            if (buff_in_prev[0] == '\0') {
+                strncpy(buff_out, "err: No previous command available.\n", BUFFLEN);
+                write(myThread->connfd, buff_out, BUFFLEN);
+                memset(buff_out,0,BUFFLEN);
+                goto donecmds;
+            }
+            else {
+                memset(buff_in,0,BUFFLEN);
+                memcpy(buff_in, buff_in_prev, BUFFLEN);
+                didRepeat = TRUE;
+            }
+        }
 
         // Command parsing
         if      (!strncmp(buff_in, "bye",      3))  {  // bye
@@ -598,10 +626,34 @@ void chatThread(void* ptr) {
             printf("quit from slot %d address %s \n", myThread->ipServerNum, inet_ntoa(myThread->client.sin_addr));
             close(myThread->connfd);
             close(sockfd);
-            exit(0); //UGLY
-            //doQuit = TRUE;
+            gotCtrlC=1;
 
             goto endcom;
+        }
+        else if (!strncmp(buff_in, "help",    4))  {  // help
+            int buffUsed = 0;
+            buffUsed += snprintf(buff_out+buffUsed, BUFFLEN-buffUsed,
+                                 "  ACCEPTED COMMANDS:\n");
+            buffUsed += snprintf(buff_out+buffUsed, BUFFLEN-buffUsed,
+                                 "  'bye'                     End this network connection\n");
+            buffUsed += snprintf(buff_out+buffUsed, BUFFLEN-buffUsed,
+                                 "  'quit'                    Virtual Control+C on the server\n");
+            buffUsed += snprintf(buff_out+buffUsed, BUFFLEN-buffUsed,
+                                 "  'dump'                    Dump the current IOmap\n");
+            buffUsed += snprintf(buff_out+buffUsed, BUFFLEN-buffUsed,
+                                 "  'meta all'                Show mappings for all PDOs\n");
+            buffUsed += snprintf(buff_out+buffUsed, BUFFLEN-buffUsed,
+                                 "  'meta slave:idx:subidx'   Show mappings for given PDO (format int:hex:hex)\n");
+            buffUsed += snprintf(buff_out+buffUsed, BUFFLEN-buffUsed,
+                                 "  'get slave:idx:subidx'    Get current value for given PDO (format int:hex:hex)\n");
+
+            if (buffUsed >= BUFFLEN) {
+                printf("ERROR: buff_out overextended\n");
+                exit(1);
+            }
+
+            write(myThread->connfd, buff_out, BUFFLEN);
+            memset(buff_out, 0, BUFFLEN);
         }
         else if (!strncmp(buff_in, "dump",    4))  {  // dump
             //dump the current raw IOmap content
@@ -642,7 +694,7 @@ void chatThread(void* ptr) {
                     buffUsed += snprintf(buff_out+buffUsed, BUFFLEN-buffUsed, "\n", slave);
 
                     if (buffUsed >= BUFFLEN) {
-                        printf("ERROR!");
+                        printf("ERROR: buff_out overextended\n");
                         exit(1);
                     }
                     write(myThread->connfd, buff_out, BUFFLEN);
@@ -683,8 +735,9 @@ void chatThread(void* ptr) {
                 printf("%d:%x:%x\n", slave,idx,subidx);
             }
             else {
-                strncpy(buff_out, "err: bad args\n", BUFFLEN);
+                strncpy(buff_out, "err: meta got bad args\n", BUFFLEN);
                 write(myThread->connfd, buff_out, BUFFLEN);
+                memset(buff_out,0,BUFFLEN);
             }
 
             //struct mappings_PDO* data = get_address(2, 0x6000, 0x11, mapping_in);
@@ -698,23 +751,34 @@ void chatThread(void* ptr) {
             //int slave = 0;
         }
         else {                                      // (unknown command)
-            strncpy(buff_out,"err: unknown command\n",BUFFLEN);
+            snprintf(buff_out, BUFFLEN, "err: unknown command '%s'\n",buff_in);
             write(myThread->connfd, buff_out, BUFFLEN);
             memset(buff_out,0,BUFFLEN);
         }
 
+    donecmds:
         //Tell the client that the response is finished
         strncpy(buff_out,"ok\n",BUFFLEN);
         write(myThread->connfd, buff_out, BUFFLEN);
+        memset(buff_out,0,BUFFLEN);
 
         //Reset the buffer before the next round
-        memset(buff_in,0,numBytes);
+        if (didRepeat) {
+            //This was a repeat; just reset the flag.
+            didRepeat = FALSE;
+        }
+        else {
+            //Not a repeat; copy this command to last.
+            memset(buff_in_prev,0,BUFFLEN);
+            memcpy(buff_in_prev,buff_in,BUFFLEN);
+        }
+        memset(buff_in,0,BUFFLEN);
     }
 
  endcom:
     printf("Finished: -- slot %d disconnecting from %s \n", myThread->ipServerNum, inet_ntoa(myThread->client.sin_addr));
     memset(buff_out, 0, BUFFLEN);
-    
+
     strncpy(buff_out, "bye\n", BUFFLEN);
     write(myThread->connfd, buff_out, 4);
 
@@ -744,6 +808,11 @@ OSAL_THREAD_FUNC mainIPserver( void* ptr ) {
     if (sockfd == -1) {
         perror("ERROR when opening socket");
         exit(1);
+    }
+
+    int enableReuse = 1;
+    if (setsockopt(sockfd, SOL_SOCKET, SO_REUSEADDR, &enableReuse, sizeof(int)) < 0){
+        printf("WARNING: setsockopt(SO_REUSEADDR) failed");
     }
 
     //Set server IP and port
@@ -847,6 +916,16 @@ OSAL_THREAD_FUNC mainIPserver( void* ptr ) {
     }
 }
 
+void ctrlC_handler(int signal){
+    if(gotCtrlC==1) {
+        //User is desperate. Kill it NOW.
+        abort();
+    }
+    else {
+        gotCtrlC = 1;
+    }
+}
+
 int main(int argc, char *argv[]) {
     printf("SOEM (Simple Open EtherCAT Master)\nSimple test\n");
 
@@ -854,17 +933,18 @@ int main(int argc, char *argv[]) {
         // Read config file
         //TODO
 
-        doQuit = FALSE;
-
         /* create thread to handle slave error handling in OP */
         //Note: This is technically a library bug;
         // function pointers should not be declared as void*!
         // https://isocpp.org/wiki/faq/pointers-to-members#cant-cvt-fnptr-to-voidptr
-        osal_thread_create(&thread_PLCwatch,    128000, (void*) &ecatcheck,    (void*) &ctime);
+        osal_thread_create(&thread_PLCwatch,    128000, (void*) &ecat_check,    (void*) &ctime);
         osal_thread_create(&thread_communicate, 128000, (void*) &mainIPserver, (void*) &ctime);
 
+        //Interupt handler for Control+c
+        signal(SIGINT, ctrlC_handler);
+
         /* start cyclic part */
-        initialize(argv[1]);
+        ecat_initialize(argv[1]);
     }
     else {
         printf("Usage:    daemon ifname\n");
