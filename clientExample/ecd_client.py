@@ -4,21 +4,26 @@ class ecd_client(object):
     "Simple class which handles connections to an EtherCat daemon"
 
     sock = None
-    ip   = None
+    host = None
     port = None
 
     isReady = None #Ready for next command
 
     __BUFFLEN = 1024
 
-    def __init__(self, ip=socket._LOCALHOST, port=4200):
-        self.ip = ip
+    def __init__(self, host=socket._LOCALHOST, port=4200):
+        self.host = host
         self.port = port
 
         self.isReady = False
 
         self.sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        self.sock.connect((self.ip,self.port))
+        try:
+            self.sock.connect((self.host,self.port))
+        except Exception as err:
+            print("Socket exception on connect():", err)
+            self.sock = None
+            exit(1)
 
         self.doRead()
         assert self.isReady
@@ -73,6 +78,9 @@ class ecd_client(object):
             return float(rs[0])
 
     def __del__(self):
+        if self.sock == None:
+            return
+
         self.sock.send(b'bye')
         istr = self.sock.recv(self.__BUFFLEN)
 

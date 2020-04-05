@@ -2,8 +2,6 @@
 
 # Example EtherCatDaemon client, which logs the temperature every second and plots it
 
-#import sys
-
 from ecd_client import ecd_client,ecd_error
 
 import matplotlib.pyplot as plt
@@ -12,9 +10,16 @@ import matplotlib
 import time
 import datetime
 
+import sys
+
 if __name__ == "__main__":
     "Example demonstrating how ecd_client can be used"
-    cli = ecd_client()
+
+    host = 'localhost'
+    if len(sys.argv) == 2:
+        host = sys.argv[1]
+
+    cli = ecd_client(host)
 
     #cli.call_metaAll()
 
