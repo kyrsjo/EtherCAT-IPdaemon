@@ -23,6 +23,8 @@ struct mappings_PDO* mapping_in  = NULL; // Inputs, i.e. reading of voltages, en
 // File-global data ************************************************************************
 char IOmap[4096]; //TODO: Verify map size at runtime
 
+OSAL_THREAD_HANDLE thread_PLCwatch; // Slave error handling
+
 // Work counter status, for error checking
 volatile int wkc;
 int expectedWKC;
@@ -33,6 +35,12 @@ uint8 currentgroup = 0;
 
 void ecat_PLCdaemon() {
     //This periodically synchronizes the PLC and the IOmap
+
+    /* create thread to handle slave error handling in OP */
+    //Note: This is technically a library bug;
+    // function pointers should not be declared as void*!
+    // https://isocpp.org/wiki/faq/pointers-to-members#cant-cvt-fnptr-to-voidptr
+    osal_thread_create(&thread_PLCwatch,    128000, (void*) &ecat_check,    (void*) &ctime);
 
     /* cyclic loop */
     while(1) {
@@ -48,90 +56,92 @@ void ecat_PLCdaemon() {
 
         if(gotCtrlC) break;
     }
+    pthread_mutex_lock(&printf_lock);
     printf("Caught a control+c signal, shutting down now.\n");
+    pthread_mutex_unlock(&printf_lock);
 }
 
-// Copied from test/linux/slaveinfo/slaveinfo.c::dtype2string()
-char* dtype2string(uint16 dtype, char* hstr) {
+// Adapted from SOEM/test/linux/slaveinfo/slaveinfo.c::dtype2string()
+char* dtype2string(uint16 dtype, char* hstr, int bufflen) {
     switch(dtype) {
     case ECT_BOOLEAN:
-        sprintf(hstr, "BOOLEAN");
+        snprintf(hstr, bufflen, "BOOLEAN");
         break;
     case ECT_INTEGER8:
-        sprintf(hstr, "INTEGER8");
+        snprintf(hstr, bufflen, "INTEGER8");
         break;
     case ECT_INTEGER16:
-        sprintf(hstr, "INTEGER16");
+        snprintf(hstr, bufflen, "INTEGER16");
         break;
     case ECT_INTEGER32:
-        sprintf(hstr, "INTEGER32");
+        snprintf(hstr, bufflen, "INTEGER32");
         break;
     case ECT_INTEGER24:
-        sprintf(hstr, "INTEGER24");
+        snprintf(hstr, bufflen, "INTEGER24");
         break;
     case ECT_INTEGER64:
-        sprintf(hstr, "INTEGER64");
+        snprintf(hstr, bufflen, "INTEGER64");
         break;
     case ECT_UNSIGNED8:
-        sprintf(hstr, "UNSIGNED8");
+        snprintf(hstr, bufflen, "UNSIGNED8");
         break;
     case ECT_UNSIGNED16:
-        sprintf(hstr, "UNSIGNED16");
+        snprintf(hstr, bufflen, "UNSIGNED16");
         break;
     case ECT_UNSIGNED32:
-        sprintf(hstr, "UNSIGNED32");
+        snprintf(hstr, bufflen, "UNSIGNED32");
         break;
     case ECT_UNSIGNED24:
-        sprintf(hstr, "UNSIGNED24");
+        snprintf(hstr, bufflen, "UNSIGNED24");
         break;
     case ECT_UNSIGNED64:
-        sprintf(hstr, "UNSIGNED64");
+        snprintf(hstr, bufflen, "UNSIGNED64");
         break;
     case ECT_REAL32:
-        sprintf(hstr, "REAL32");
+        snprintf(hstr, bufflen, "REAL32");
         break;
     case ECT_REAL64:
-        sprintf(hstr, "REAL64");
+        snprintf(hstr, bufflen, "REAL64");
         break;
     case ECT_BIT1:
-        sprintf(hstr, "BIT1");
+        snprintf(hstr, bufflen, "BIT1");
         break;
     case ECT_BIT2:
-        sprintf(hstr, "BIT2");
+        snprintf(hstr, bufflen, "BIT2");
         break;
     case ECT_BIT3:
-        sprintf(hstr, "BIT3");
+        snprintf(hstr, bufflen, "BIT3");
         break;
     case ECT_BIT4:
-        sprintf(hstr, "BIT4");
+        snprintf(hstr, bufflen, "BIT4");
         break;
     case ECT_BIT5:
-        sprintf(hstr, "BIT5");
+        snprintf(hstr, bufflen, "BIT5");
         break;
     case ECT_BIT6:
-        sprintf(hstr, "BIT6");
+        snprintf(hstr, bufflen, "BIT6");
         break;
     case ECT_BIT7:
-        sprintf(hstr, "BIT7");
+        snprintf(hstr, bufflen, "BIT7");
         break;
     case ECT_BIT8:
-        sprintf(hstr, "BIT8");
+        snprintf(hstr, bufflen, "BIT8");
         break;
     case ECT_VISIBLE_STRING:
-        sprintf(hstr, "VISIBLE_STRING");
+        snprintf(hstr, bufflen, "VISIBLE_STRING");
         break;
     case ECT_OCTET_STRING:
-        sprintf(hstr, "OCTET_STRING");
+        snprintf(hstr, bufflen, "OCTET_STRING");
         break;
     default:
-        sprintf(hstr, "Type 0x%4.4X", dtype);
+        snprintf(hstr, bufflen, "Type 0x%4.4X", dtype);
     }
     return hstr;
 }
 
-// Modified version of test/linux/slaveinfo/slaveinfo.c::SDO2string()
-int PODval2string(struct mappings_PDO* mapping, char* buff, int bufflen) {
-    //int l = sizeof(usdo) - 1, i;
+// Modified version of SOEM/test/linux/slaveinfo/slaveinfo.c::SDO2string()
+int PDOval2string(struct mappings_PDO* mapping, char* buff, int bufflen) {
+
    uint8 *u8;
    int8 *i8;
    uint16 *u16;
@@ -142,16 +152,10 @@ int PODval2string(struct mappings_PDO* mapping, char* buff, int bufflen) {
    int64 *i64;
    float *sr;
    double *dr;
-   char es[32];
 
-   //memset(&usdo, 0, 128);
-   //ec_SDOread(slave, index, subidx, FALSE, &l, &usdo, EC_TIMEOUTRXM);
-   //if (EcatError)
-   //{
-   //   return ec_elist2string();
-   //}
-   //else
-   //{
+   const int es_len = 32;
+   char es[es_len];
+
    switch(mapping->dataType) {
    /*
    case ECT_BOOLEAN:
@@ -261,11 +265,14 @@ int PODval2string(struct mappings_PDO* mapping, char* buff, int bufflen) {
 
 
 struct mappings_PDO* fill_mapping_list (uint16 slave, struct mappings_PDO* map_tail, uint16 PDOassign, size_t IOmapoffset) {
-    // Fill the linked lists mapping_out and mapping_in
-    // This code is is very close to test/linux/slaveinfo/slaveinfo.c::si_PDOassign()
+    // Fill the linked lists mapping_out and mapping_in; helper function for ecat_setup_mappings()
+    // This code is is very close to SOEM/test/linux/slaveinfo/slaveinfo.c::si_PDOassign()
     // Returns the current tail of the list, or NULL if there was an error
 
-    char hstr[1024]; // String buffer for output
+    // Note:: Assumes printf_lock to be already grabbed by the calling function
+
+    const int bufflen = 1024;
+    char hstr[bufflen]; // String buffer for output
 
     // Note that I am assuming bitoffset = 0 at the beginning of every SM (aka. PDOassign).
     int bsize = 0;   // Size of SM in bits
@@ -338,11 +345,11 @@ struct mappings_PDO* fill_mapping_list (uint16 slave, struct mappings_PDO* map_t
                         //Last entry is always blank (trimmed off at the end)
                         map_tail->next = (struct mappings_PDO*) malloc(sizeof(struct mappings_PDO));
                         map_tail = map_tail->next;
-                        memset(map_tail, 0, sizeof(sizeof(struct mappings_PDO)));
+                        memset(map_tail, 0, sizeof(struct mappings_PDO));
 
                         printf("[0x%4.4X.%1d] %d 0x%4.4X:0x%2.2X 0x%2.2X %-12s %s\n",
                                abs_offset, abs_bit, slave, obj_idx, obj_subidx, bitlen,
-                               dtype2string(OElist.DataType[obj_subidx], hstr), OElist.Name[obj_subidx]);
+                               dtype2string(OElist.DataType[obj_subidx], hstr, bufflen), OElist.Name[obj_subidx]);
                     }
                     bsize += bitlen;
                 }
@@ -354,8 +361,7 @@ struct mappings_PDO* fill_mapping_list (uint16 slave, struct mappings_PDO* map_t
         printf("ERROR: bsize = %d of slave %d not divisible by 8.\n", bsize, slave);
         return NULL;
     }
-
-    printf("\n");
+    //printf("\n");
     return map_tail;
 }
 
@@ -364,21 +370,25 @@ int ecat_setup_mappings() {
     // It is assumed that we can find everything over CoE, i.e. the slaves supprt the mailbox protocol.
     // Return: 1 if all OK, 0 in case of error
 
+    // Note: IOmapLock is assumed to be grabbed by calling thread
+    // Note: This thread grabs the printf_lock. Any called functions should NOT grab this lock!
+
+    pthread_mutex_lock(&printf_lock);
+
     mapping_out = (struct mappings_PDO*) malloc(sizeof(struct mappings_PDO));
     struct mappings_PDO* mapping_out_tail = mapping_out;
-    memset(mapping_out, 0, sizeof(sizeof(struct mappings_PDO)));
+    memset(mapping_out, 0, sizeof(struct mappings_PDO));
 
     mapping_in = (struct mappings_PDO*) malloc(sizeof(struct mappings_PDO));
     struct mappings_PDO* mapping_in_tail = mapping_in;
-    memset(mapping_in, 0, sizeof(sizeof(struct mappings_PDO)));
+    memset(mapping_in, 0, sizeof(struct mappings_PDO));
 
     for(uint16 slave = 1 ; slave <= ec_slavecount ; slave++) {
         if (!(ec_slave[slave].mbx_proto & ECT_MBXPROT_COE)) {
             // Slave didn't support the CoE mailbox protocol.
             // The coupler needs this, so we can't completely ignore it.
-            // This code is is very close to test/linux/slaveinfo/slaveinfo.c::si_map_sii()
-            printf("Found SII setup of slave %d no action\n", slave);
-
+            // This code is is very close to SOEM/test/linux/slaveinfo/slaveinfo.c::si_map_sii()
+            printf("Found SII setup of slave %d; no action.\n", slave);
             if (ec_slave[slave].Obytes || ec_slave[slave].Ibytes) {
                 printf("ERROR in setup_mappings: slave %d is of type SII but not zero bytes.\n", slave);
                 return 0;
@@ -387,8 +397,8 @@ int ecat_setup_mappings() {
         else {
             // Slave supports CAN over Ethernet (CoE) mailbox protocol.
             // Get number of SyncManager PDOs for this slave
-            // This code is is very close to test/linux/slaveinfo/slaveinfo.c::si_map_sdo()
-            printf("Found CoE setup of slave %d, reading PDOs...\n", slave);
+            // This code is is very close to SOEM/test/linux/slaveinfo/slaveinfo.c::si_map_sdo()
+            printf("Found CoE setup of slave %d; reading PDOs...\n", slave);
 
             int nSM = 0;
             int rdl = sizeof(nSM);
@@ -397,7 +407,7 @@ int ecat_setup_mappings() {
                 if (nSM-1 > EC_MAXSM) {
                     printf("ERROR: nSM=%d for slave %d > EC_MAXSM = %d.\n", nSM, slave, EC_MAXSM);
                     printf("       This is not supported by daemon.c. \n");
-                    return 0;
+                    goto return_fail;
                 }
                 for (int iSM = 2 ; iSM < nSM ; iSM++) { // Only SM 2/3 are actually interesting for process data
                     // Check the communication type for this SM
@@ -408,14 +418,15 @@ int ecat_setup_mappings() {
                             if (tSM != 3) {
                                 fprintf(stderr,"ERROR: Got tSM=%d for iSM=%d while scanning slave %d\n",tSM,iSM,slave);
                                 fprintf(stderr,"       This was not expected!\n");
-                                return 0;
+                                goto return_fail;
                             }
                             //Read the assigned RxPDO
                             size_t  IOmapoffset = (size_t)(ec_slave[slave].outputs - (uint8 *)&IOmap[0]);
+                            printf("OUTPUTS:\n");
                             mapping_out_tail = fill_mapping_list(slave, mapping_out_tail, ECT_SDO_PDOASSIGN + iSM, IOmapoffset);
                             if ( mapping_out_tail == NULL  ) {
                                 printf("ERROR: unexpected behaviour of slave, implementation assumption was violated");
-                                return 0;
+                                goto return_fail;
                             }
 
                         }
@@ -423,22 +434,22 @@ int ecat_setup_mappings() {
                             if (tSM != 4) {
                                 fprintf(stderr,"ERROR: Got tSM=%d for iSM=%d while scanning slave %d\n",tSM,iSM,slave);
                                 fprintf(stderr,"       This was not expected!\n");
-                                return 0;
+                                goto return_fail;
                             }
                             //Read the assigned TxPDO
                             size_t  IOmapoffset = (size_t)(ec_slave[slave].inputs - (uint8 *)&IOmap[0]);
+                            printf("INPUTS:\n");
                             mapping_in_tail = fill_mapping_list(slave, mapping_in_tail, ECT_SDO_PDOASSIGN + iSM, IOmapoffset);
                             if ( mapping_in_tail == NULL ) {
                                 printf("ERROR: unexpected behaviour of slave, implementation assumption was violated");
-                                return 0;
+                                goto return_fail;
                             }
 
                         }
                         else { // Should never happen...
                             fprintf(stderr,"ERROR: Got iSM=%d (tSM=%d) while scanning slave %d\n",iSM, tSM, slave);
                             fprintf(stderr,"       This was not expected!\n");
-                            return 0;
-                            break;
+                            goto return_fail;
                         }
                     }
 
@@ -448,7 +459,13 @@ int ecat_setup_mappings() {
         }
     }
 
+    pthread_mutex_unlock(&printf_lock);
     return 1; //Success!
+
+return_fail:
+    pthread_mutex_unlock(&printf_lock);
+    return 0; // Failure
+
 }
 struct mappings_PDO* get_address(uint16 slaveID, uint16 idx, uint8 subidx, struct mappings_PDO* head){
     //Function to extract the relevant link of a mappings_PDO list,
@@ -472,53 +489,65 @@ struct mappings_PDO* get_address(uint16 slaveID, uint16 idx, uint8 subidx, struc
     return NULL; // Nothing was found.
 }
 
-void ecat_initialize(char* ifname) {
+void ecat_driver(char* ifname) {
     int chk;
-
-    int slaveID = 2;
 
     //needlf = FALSE;
     inOP = FALSE;
 
     if (pthread_mutex_init(&IOmap_lock, NULL) != 0) {
-        //TODO: Destroy it at the end of the program
-        fprintf(stderr,"\n mutex init has failed\n");
+        pthread_mutex_lock(&printf_lock);
+        perror("ERROR pthread_mutex_init has failed for IOmap_lock");
+        pthread_mutex_unlock(&printf_lock);
         exit(1);
     }
 
-    printf("Starting daemon\n");
+    pthread_mutex_lock(&printf_lock);
+    printf("Starting driver...\n");
+    pthread_mutex_unlock(&printf_lock);
 
     /* initialise SOEM, bind socket to ifname */
     if (ec_init(ifname)) {
+        pthread_mutex_lock(&printf_lock);
         printf("ec_init on %s succeeded.\n",ifname);
+        pthread_mutex_unlock(&printf_lock);
         /* find and auto-config slaves */
 
+        pthread_mutex_lock(&IOmap_lock); // Grab this lock untill we've done initializing
         if ( ec_config_init(FALSE) > 0 ) {
+            pthread_mutex_lock(&printf_lock);
             printf("%d slaves found and configured.\n",ec_slavecount);
-            if (slaveID > ec_slavecount) {
-                ec_close();
-                fprintf(stderr, "ERROR: slavecount < slaveID. Quitting.\n");
-                exit(1);
-            }
+            pthread_mutex_unlock(&printf_lock);
 
-            ec_config_map(&IOmap); // fills ec_slave and more
+            ec_config_map(&IOmap); // fills ec_slave and more.
 
             ec_configdc();
 
+            pthread_mutex_lock(&printf_lock);
             printf("Slaves mapped, state to SAFE_OP.\n");
+            pthread_mutex_unlock(&printf_lock);
             /* wait for all slaves to reach SAFE_OP state */
             ec_statecheck(0, EC_STATE_SAFE_OP,  EC_TIMEOUTSTATE * 4);
 
-            printf("segments : %d : %d %d %d %d\n",ec_group[0].nsegments ,ec_group[0].IOsegment[0],ec_group[0].IOsegment[1],ec_group[0].IOsegment[2],ec_group[0].IOsegment[3]);
+            //printf("segments : %d : %d %d %d %d\n",ec_group[0].nsegments ,ec_group[0].IOsegment[0],ec_group[0].IOsegment[1],ec_group[0].IOsegment[2],ec_group[0].IOsegment[3]);
 
+            pthread_mutex_lock(&printf_lock);
+            printf("\n");
+            printf("PDO mappings:\n");
+            pthread_mutex_unlock(&printf_lock);
             if(!ecat_setup_mappings()) {
+                pthread_mutex_lock(&printf_lock);
                 fprintf(stderr, "Error in setup_mappings()\n");
+                pthread_mutex_unlock(&printf_lock);
                 exit(1);
             }
 
+            pthread_mutex_lock(&printf_lock);
+            printf("\n");
             printf("Request operational state for all slaves\n");
             expectedWKC = (ec_group[0].outputsWKC * 2) + ec_group[0].inputsWKC;
             printf("Calculated workcounter %d\n", expectedWKC);
+            pthread_mutex_unlock(&printf_lock);
             ec_slave[0].state = EC_STATE_OPERATIONAL;
             /* send one valid process data to make outputs in slaves happy*/
             ec_send_processdata();
@@ -535,103 +564,152 @@ void ecat_initialize(char* ifname) {
             while (chk-- && (ec_slave[0].state != EC_STATE_OPERATIONAL));
 
             if (ec_slave[0].state == EC_STATE_OPERATIONAL ) {
+                pthread_mutex_lock(&printf_lock);
                 printf("Operational state reached for all slaves.\n");
+                printf("\n");
+                pthread_mutex_unlock(&printf_lock);
+
                 inOP = TRUE;
                 updating = TRUE;
-                ecat_PLCdaemon();
+                pthread_mutex_unlock(&IOmap_lock);
+
+                ecat_PLCdaemon(); // !!! HERE WE ARE IN OPERATION; WILL STAY IN THIS FUNCTION UNTIL QUITTING !!!
 
                 inOP = FALSE;
             }
             else {
+                pthread_mutex_lock(&printf_lock);
                 printf("Not all slaves reached operational state.\n");
+                pthread_mutex_unlock(&printf_lock);
+
                 ec_readstate();
+                pthread_mutex_lock(&printf_lock);
                 for(int i = 1; i<=ec_slavecount ; i++) {
                     if(ec_slave[i].state != EC_STATE_OPERATIONAL) {
                         printf("Slave %d State=0x%2.2x StatusCode=0x%4.4x : %s\n",
                                i, ec_slave[i].state, ec_slave[i].ALstatuscode, ec_ALstatuscode2string(ec_slave[i].ALstatuscode));
                     }
                 }
+                pthread_mutex_unlock(&printf_lock);
+
+                pthread_mutex_unlock(&IOmap_lock);
+
             }
+
+            pthread_mutex_lock(&printf_lock);
             printf("\nRequest init state for all slaves\n");
+            pthread_mutex_unlock(&printf_lock);
+
+            pthread_mutex_lock(&IOmap_lock);
             ec_slave[0].state = EC_STATE_INIT;
             /* request INIT state for all slaves */
             ec_writestate(0);
+            pthread_mutex_unlock(&IOmap_lock);
         }
         else {
+            pthread_mutex_unlock(&IOmap_lock);
+
+            pthread_mutex_lock(&printf_lock);
             printf("No slaves found!\n");
+            pthread_mutex_unlock(&printf_lock);
         }
-        printf("End simple test, close SOEM socket\n");
-        /* stop SOEM, close socket */
+
+        // stop SOEM, close socket
+        pthread_mutex_lock(&printf_lock);
+        printf("Closing SOEM socket...\n");
+        pthread_mutex_unlock(&printf_lock);
+        
         ec_close();
     }
     else {
+        pthread_mutex_lock(&printf_lock);
         printf("No socket connection on %s\nPlease excecute as root!\n",ifname);
+        pthread_mutex_unlock(&printf_lock);
     }
 
+    if (pthread_mutex_destroy(&IOmap_lock) != 0) {
+        perror("ERROR pthread_mutex_destroy has failed for IOmap_lock");
+        exit(1);
+    }
 }
 
 
-//Function to check that all slaves are alive,
-// and reinitialize them if needed.
+//Function to check that all slaves are alive, and reinitialize them if needed.
+// Copied almost verbatim from SOEM/test/linux/simple_test/simple_test.c::ecatcheck()
 OSAL_THREAD_FUNC ecat_check( void *ptr ) {
     (void)ptr; // Not used, reference it to quiet down the compiler
 
     while(1) {
+        
+        pthread_mutex_lock(&IOmap_lock);
         if( inOP && ((wkc < expectedWKC) || ec_group[currentgroup].docheckstate)) {
-            //if (needlf) {
-            //   needlf = FALSE;
-            //   printf("\n");
-            //}
+
             /* one ore more slaves are not responding */
             updating = FALSE;
             ec_group[currentgroup].docheckstate = FALSE;
             ec_readstate();
             for (uint16 slave = 1; slave <= ec_slavecount; slave++) {
-               if ((ec_slave[slave].group == currentgroup) && (ec_slave[slave].state != EC_STATE_OPERATIONAL)) {
-                  ec_group[currentgroup].docheckstate = TRUE;
-                  if (ec_slave[slave].state == (EC_STATE_SAFE_OP + EC_STATE_ERROR)) {
-                     printf("ERROR : slave %d is in SAFE_OP + ERROR, attempting ack.\n", slave);
-                     ec_slave[slave].state = (EC_STATE_SAFE_OP + EC_STATE_ACK);
-                     ec_writestate(slave);
-                  }
-                  else if(ec_slave[slave].state == EC_STATE_SAFE_OP) {
-                     printf("WARNING : slave %d is in SAFE_OP, change to OPERATIONAL.\n", slave);
-                     ec_slave[slave].state = EC_STATE_OPERATIONAL;
-                     ec_writestate(slave);
-                  }
-                  else if(ec_slave[slave].state > EC_STATE_NONE) {
-                     if (ec_reconfig_slave(slave, EC_TIMEOUTMON)) {
+                if ((ec_slave[slave].group == currentgroup) && (ec_slave[slave].state != EC_STATE_OPERATIONAL)) {
+                      ec_group[currentgroup].docheckstate = TRUE;
+                    if (ec_slave[slave].state == (EC_STATE_SAFE_OP + EC_STATE_ERROR)) {
+                        pthread_mutex_lock(&printf_lock);
+                        printf("ERROR : slave %d is in SAFE_OP + ERROR, attempting ack.\n", slave);
+                        pthread_mutex_unlock(&printf_lock);
+                        ec_slave[slave].state = (EC_STATE_SAFE_OP + EC_STATE_ACK);
+                        ec_writestate(slave);
+                    }
+                    else if(ec_slave[slave].state == EC_STATE_SAFE_OP) {
+                        pthread_mutex_lock(&printf_lock);
+                        printf("WARNING : slave %d is in SAFE_OP, change to OPERATIONAL.\n", slave);
+                        pthread_mutex_unlock(&printf_lock);
+                        ec_slave[slave].state = EC_STATE_OPERATIONAL;
+                        ec_writestate(slave);
+                    }
+                      else if(ec_slave[slave].state > EC_STATE_NONE) {
+                        if (ec_reconfig_slave(slave, EC_TIMEOUTMON)) {
+                            ec_slave[slave].islost = FALSE;
+                            pthread_mutex_lock(&printf_lock);
+                            printf("MESSAGE : slave %d reconfigured\n",slave);
+                            pthread_mutex_unlock(&printf_lock);
+                        }
+                    }
+                    else if(!ec_slave[slave].islost) {
+                        /* re-check state */
+                        ec_statecheck(slave, EC_STATE_OPERATIONAL, EC_TIMEOUTRET);
+                        if (ec_slave[slave].state == EC_STATE_NONE) {
+                            ec_slave[slave].islost = TRUE;
+                            pthread_mutex_lock(&printf_lock);
+                            printf("ERROR : slave %d lost\n",slave);
+                            pthread_mutex_unlock(&printf_lock);
+                        }
+                    }
+                }
+                if (ec_slave[slave].islost) {
+                      if(ec_slave[slave].state == EC_STATE_NONE) {
+                            if (ec_recover_slave(slave, EC_TIMEOUTMON)) {
+                                ec_slave[slave].islost = FALSE;
+                                pthread_mutex_lock(&printf_lock);
+                                printf("MESSAGE : slave %d recovered\n",slave);
+                                pthread_mutex_unlock(&printf_lock);
+                        }
+                    }
+                    else {
                         ec_slave[slave].islost = FALSE;
-                        printf("MESSAGE : slave %d reconfigured\n",slave);
-                     }
-                  }
-                  else if(!ec_slave[slave].islost) {
-                     /* re-check state */
-                     ec_statecheck(slave, EC_STATE_OPERATIONAL, EC_TIMEOUTRET);
-                     if (ec_slave[slave].state == EC_STATE_NONE) {
-                        ec_slave[slave].islost = TRUE;
-                        printf("ERROR : slave %d lost\n",slave);
-                     }
-                  }
-               }
-               if (ec_slave[slave].islost) {
-                  if(ec_slave[slave].state == EC_STATE_NONE) {
-                     if (ec_recover_slave(slave, EC_TIMEOUTMON)) {
-                        ec_slave[slave].islost = FALSE;
-                        printf("MESSAGE : slave %d recovered\n",slave);
-                     }
-                  }
-                  else {
-                     ec_slave[slave].islost = FALSE;
-                     printf("MESSAGE : slave %d found\n",slave);
-                  }
-               }
+                        pthread_mutex_lock(&printf_lock);
+                        printf("MESSAGE : slave %d found\n",slave);
+                        pthread_mutex_unlock(&printf_lock);
+                    }
+                }
             }
             if(!ec_group[currentgroup].docheckstate) {
+                pthread_mutex_lock(&printf_lock);
                 printf("OK : all slaves resumed OPERATIONAL.\n");
+                pthread_mutex_unlock(&printf_lock);
                 updating = TRUE;
             }
         }
+        pthread_mutex_unlock(&IOmap_lock);
+
         osal_usleep(PLC_waittime_checkAlive);
     }
 }

@@ -50,11 +50,11 @@ void ecat_PLCdaemon();
 
 // Convert an EtherCAT data type index to a string into the given buffer
 // Returns *hstr.
-char* dtype2string(uint16 dtype, char* hstr);
+char* dtype2string(uint16 dtype, char* hstr, int bufflen);
 
 // Given a mapping into the IOmap, extract the data and convert to string into the given buffer
 // Returns 1 on success, 0 on failure.
-int PODval2string(struct mappings_PDO* mapping, char* buff, int bufflen);
+int PDOval2string(struct mappings_PDO* mapping, char* buff, int bufflen);
 
 
 //Function to setup the mapping from slave/indx/subindx to memory address by interrogating the PLC.
@@ -74,7 +74,7 @@ struct mappings_PDO* get_address(uint16 slaveID, uint16 idx, uint8 subidx, struc
 
 //Initialize the EtherCAT PLC, setup the mappings, and start the daemon.
 // Runs in it's own thread.
-void ecat_initialize(char* ifname);
+void ecat_driver(char* ifname);
 
 //Function to check that all slaves are alive, and reinitialize them if needed.
 // Runs in it's own thread.

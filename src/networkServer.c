@@ -34,7 +34,7 @@ int writeMapping(char* buff_out, struct mappings_PDO* mapping, int connfd) {
                             "  [0x%4.4X.%1d] %d:0x%4.4X:0x%2.2X 0x%2.2X %-12s %s\n",
                             mapping->offset, mapping->bitoff,
                             mapping->slaveIdx, mapping->idx, mapping->subidx,
-                            mapping->bitlen, dtype2string(mapping->dataType, hstr), mapping->name);
+                            mapping->bitlen, dtype2string(mapping->dataType, hstr, BUFFLEN), mapping->name);
     if (numChars < 0 || numChars >= BUFFLEN) {
         memset(buff_out,0,BUFFLEN);
         snprintf(buff_out, BUFFLEN,
@@ -62,13 +62,20 @@ void chatThread(void* ptr) {
     memset(buff_in_prev,  0, BUFFLEN);
 
     while (1) {
+        //Tell the client that we are ready for the next command
+        strncpy(buff_out,"ok\n",BUFFLEN);
+        write(myThread->connfd, buff_out, BUFFLEN);
+        memset(buff_out,0,BUFFLEN);
+
         int numBytes = read(myThread->connfd, buff_in, BUFFLEN);
         if (numBytes >= BUFFLEN) {
             //Note: Last byte in buff should always be \0.
-            printf("ERROR, message too long");
+            pthread_mutex_lock(&printf_lock);
+            fprintf(stderr, "ERROR, message too long");
+            pthread_mutex_unlock(&printf_lock);
             goto endcom;
         }
-        printf("GOT: (%d) '%s'\n", strlen(buff_in), buff_in);
+        //printf("GOT: (%d) '%s'\n", strlen(buff_in), buff_in);
 
         //Replay last command
         if (buff_in[0] =='\n' || buff_in[0] == '\r')  {  // linebreak -> replay previous cmd
@@ -91,7 +98,9 @@ void chatThread(void* ptr) {
             goto endcom;
         }
         else if (!strncmp(buff_in, "quit",     4))  {  // quit
+            pthread_mutex_lock(&printf_lock);
             printf("quit from slot %d address %s \n", myThread->ipServerNum, inet_ntoa(myThread->client.sin_addr));
+            pthread_mutex_unlock(&printf_lock);
             close(myThread->connfd);
             close(sockfd);
             gotCtrlC=1;
@@ -114,9 +123,12 @@ void chatThread(void* ptr) {
                                  "  'meta slave:idx:subidx'   Show mappings for given PDO (format int:hex:hex)\n");
             buffUsed += snprintf(buff_out+buffUsed, BUFFLEN-buffUsed,
                                  "  'get slave:idx:subidx'    Get current value for given PDO (format int:hex:hex)\n");
-
+            buffUsed += snprintf(buff_out+buffUsed, BUFFLEN-buffUsed,
+                                 "  '\\r' or '\\n' (ENTER)      Repeat previous command\n");
             if (buffUsed >= BUFFLEN) {
-                printf("ERROR: buff_out overextended\n");
+                pthread_mutex_lock(&printf_lock);
+                fprintf(stderr, "ERROR: buff_out overextended\n");
+                pthread_mutex_unlock(&printf_lock);
                 exit(1);
             }
 
@@ -124,7 +136,7 @@ void chatThread(void* ptr) {
             memset(buff_out, 0, BUFFLEN);
         }
         else if (!strncmp(buff_in, "dump",    4))  {  // dump
-            //dump the current raw IOmap content
+            //Dump the current raw IOmap content
             if (!inOP || !updating) {
                 strncpy(buff_out, "err: not inOP or not updating\n", BUFFLEN);
                 write(myThread->connfd, buff_out, BUFFLEN);
@@ -200,19 +212,16 @@ void chatThread(void* ptr) {
             uint16 idx    = 0;
             uint8  subidx = 0;
             if (sscanf(buff_in,"meta %hi:%hx:%hhx", &slave, &idx, &subidx) == 3){
-                printf("%d:%x:%x\n", slave,idx,subidx);
+                //printf("%d:%x:%x\n", slave,idx,subidx);
+                strncpy(buff_out, "err: meta slave:idx:subidx NOT YET IMPLEMENTED\n", BUFFLEN);
+                write(myThread->connfd, buff_out, BUFFLEN);
+                memset(buff_out,0,BUFFLEN);
             }
             else {
                 strncpy(buff_out, "err: meta got bad args\n", BUFFLEN);
                 write(myThread->connfd, buff_out, BUFFLEN);
                 memset(buff_out,0,BUFFLEN);
             }
-
-            //struct mappings_PDO* data = get_address(2, 0x6000, 0x11, mapping_in);
-            //printf("[0x%4.4X.%1d] 0x%2.2X; VALUE=", data->offset, data->bitoff, data->bitlen);
-            //int16* i16 = NULL;
-            //i16 = (int16*) &(IOmap[data->offset]);
-            //printf("%d\n", *i16);
 
         }
         else if (!strncmp(buff_in, "get ",     4))  {  // get slave:idx:subidx
@@ -227,18 +236,18 @@ void chatThread(void* ptr) {
                 goto donecmds;
             }
 
-            printf("%d:%x:%x\n", slave,idx,subidx);
+            //printf("%d:%x:%x\n", slave,idx,subidx);
 
             struct mappings_PDO* dataMapping = get_address(slave, idx, subidx, mapping_in);
             if (dataMapping == NULL) {
-                snprintf(buff_out, BUFFLEN, "err: POD address %d:%x:%x not recognized (searched for inputs)\n", slave,idx,subidx);
+                snprintf(buff_out, BUFFLEN, "err: PDO address %d:%x:%x not recognized (searched for inputs)\n", slave,idx,subidx);
                 write(myThread->connfd, buff_out, BUFFLEN);
                 memset(buff_out,0,BUFFLEN);
                 goto donecmds;
             }
 
             pthread_mutex_lock(&IOmap_lock);
-            PODval2string(dataMapping, hstr, BUFFLEN);
+            PDOval2string(dataMapping, hstr, BUFFLEN);
             pthread_mutex_unlock(&IOmap_lock);
 
             snprintf(buff_out, BUFFLEN, "  %s\n", hstr);
@@ -255,11 +264,6 @@ void chatThread(void* ptr) {
 
     donecmds: // Escape from inside an input handler
 
-        //Tell the client that the response is finished
-        strncpy(buff_out,"ok\n",BUFFLEN);
-        write(myThread->connfd, buff_out, BUFFLEN);
-        memset(buff_out,0,BUFFLEN);
-
         //Reset the buffer before the next round
         if (didRepeat) {
             //This was a repeat; just reset the flag.
@@ -275,9 +279,11 @@ void chatThread(void* ptr) {
 
  endcom: // Escape from the loop
 
+    pthread_mutex_lock(&printf_lock);
     printf("Finished: -- slot %d disconnecting from %s \n", myThread->ipServerNum, inet_ntoa(myThread->client.sin_addr));
-    memset(buff_out, 0, BUFFLEN);
+    pthread_mutex_unlock(&printf_lock);
 
+    memset(buff_out, 0, BUFFLEN);
     strncpy(buff_out, "bye\n", BUFFLEN);
     write(myThread->connfd, buff_out, 4);
 
@@ -295,12 +301,6 @@ void mainIPserver( void* ptr ) {
 
     //Initialize IPservers array
     memset(IPservers, 0, sizeof(struct IPserverThreads)*NUMIPSERVERS);
-    /*    for (int i = 0; i < NUMIPSERVERS; i++) {
-        IPservers[i].inUse = 0;
-        memset(&(IPservers[i].servaddr), 0, sizeof(struct sockaddr_in));
-        IPservers[i].sockfd = 0;
-    }
-    */
 
     //Create the server socket...
     sockfd = socket(AF_INET, SOCK_STREAM, 0);
@@ -311,7 +311,9 @@ void mainIPserver( void* ptr ) {
 
     int enableReuse = 1;
     if (setsockopt(sockfd, SOL_SOCKET, SO_REUSEADDR, &enableReuse, sizeof(int)) < 0){
-        printf("WARNING: setsockopt(SO_REUSEADDR) failed");
+        pthread_mutex_lock(&printf_lock);
+        fprintf(stderr, "WARNING: setsockopt(SO_REUSEADDR) failed");
+        pthread_mutex_unlock(&printf_lock);
     }
 
     //Set server IP and port
@@ -322,17 +324,23 @@ void mainIPserver( void* ptr ) {
     // Binding newly created socket to given IP and verification
     if ((bind(sockfd, (struct sockaddr*)&servaddr, sizeof(servaddr))) != 0) {
         perror("ERROR: Socket bind failed");
+        pthread_mutex_lock(&printf_lock);
         fprintf(stderr, "if 'netstat | grep %d' shows TIME_WAIT, please wait for the OS timeout to finish\n", TCPPORT);
+        pthread_mutex_unlock(&printf_lock);
         close(sockfd);
         exit(1);
     }
 
     //Listen to the socket...
     if ((listen(sockfd, 5)) != 0) {
+        pthread_mutex_lock(&printf_lock);
         perror("ERROR: Socket listen failed");
+        pthread_mutex_unlock(&printf_lock);
         exit(1);
     }
+    pthread_mutex_lock(&printf_lock);
     printf("listen OK\n");
+    pthread_mutex_unlock(&printf_lock);
 
 
     while(1) {
@@ -346,7 +354,9 @@ void mainIPserver( void* ptr ) {
             }
         }
         if (ipServerNum == NUMIPSERVERS) {
+            pthread_mutex_lock(&printf_lock);
             printf("Too many clients!\n");
+            pthread_mutex_unlock(&printf_lock);
             goto noSock;
         }
 
@@ -360,8 +370,9 @@ void mainIPserver( void* ptr ) {
             IPservers[ipServerNum].inUse == 0;
             goto noSock;
         }
-
+        pthread_mutex_lock(&printf_lock);
         printf("IP server slot %d connected to host %s \n", ipServerNum, inet_ntoa(IPservers[ipServerNum].client.sin_addr));
+        pthread_mutex_unlock(&printf_lock);
 
         //Here using Linux pthreads, not OSAL,
         // because we want to do more than just creating the threads.
@@ -369,48 +380,8 @@ void mainIPserver( void* ptr ) {
         pthread_create(&(IPservers[ipServerNum].thread), NULL, (void*) &chatThread, (void*) &(IPservers[ipServerNum]));
 
     noSock:
-        /*
-        if (inOP) {
-            printf("Hit ENTER to print current state\n");
-            getchar();
-            pthread_mutex_lock(&lock);
-            //printf("Processdata cycle %05d/%d, WKC %d ;", i, NCYCLE, wkc);
-            printf(" T:%" PRId64 "; ",ec_DCtime);
-
-            for (uint16 slave = 1; slave <= ec_slavecount; slave++) {
-                printf("slave[%d]:",slave);
-                printf(" O:");
-                int nChars = ec_slave[slave].Obytes;
-                if (nChars==0 && ec_slave[slave].Obytes > 0) nChars = 1;
-                for(int j = 0 ; j < nChars ; j++) {
-                    printf(" %2.2x", *(ec_slave[slave].outputs + j));
-                }
-
-                printf(" I:");
-                nChars = ec_slave[slave].Ibytes;
-                if (nChars==0 && ec_slave[slave].Ibytes > 0) nChars = 1;
-                for(int j = 0 ; j < nChars ; j++) {
-                    printf(" %2.2x", *(ec_slave[slave].inputs + j));
-                }
-
-                printf("; ");
-
-            }
-            printf("\r");
-            printf("\n");
-
-            //Try to get the address the VALUE of the first sensor
-            struct mappings_PDO* data = get_address(2, 0x6000, 0x11, mapping_in);
-            printf("[0x%4.4X.%1d] 0x%2.2X; VALUE=", data->offset, data->bitoff, data->bitlen);
-            int16* i16 = NULL;
-            i16 = (int16*) &(IOmap[data->offset]);
-            printf("%d\n", *i16);
-
-            //needlf = TRUE;
-
-            pthread_mutex_unlock(&lock);
-        }
-        */
+        // Probably not needed, may even be harmfull to performance?
+        // Should probably be moved to "if (ipServerNum == NUMIPSERVERS)"
         osal_usleep(IPSERVER_PAUSE);
     }
 }

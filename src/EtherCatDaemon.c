@@ -33,42 +33,50 @@
 // Set to 1 if we got a control+C interupt or if an IP client calls 'quit'
 volatile sig_atomic_t gotCtrlC = 0;
 
+// Lock for stdin/stdout/stderr (used once we get into threading)
+pthread_mutex_t printf_lock;
 
 // File-global data ************************************************************************
 
 //Persistent threads
-OSAL_THREAD_HANDLE thread_PLCwatch; // Slave error handling
 pthread_t thread_communicate;       // TCP/IP communications
 
 // Functions        ************************************************************************
 
 int main(int argc, char *argv[]) {
-    printf("SOEM (Simple Open EtherCAT Master)\nSimple test\n");
+    printf("EtherCat daemon, using SOEM\n");
+    printf("*** For research purposes ONLY ***\n");
 
     if (argc == 2) {
         // Read config file
         //TODO
 
-        /* create thread to handle slave error handling in OP */
-        //Note: This is technically a library bug;
-        // function pointers should not be declared as void*!
-        // https://isocpp.org/wiki/faq/pointers-to-members#cant-cvt-fnptr-to-voidptr
-        osal_thread_create(&thread_PLCwatch,    128000, (void*) &ecat_check,    (void*) &ctime);
+        if (pthread_mutex_init(&printf_lock, NULL) != 0) {
+            perror("ERROR pthread_mutex_init has failed for printf_lock");
+            exit(1);
+        }
 
         pthread_create(&thread_communicate, NULL, (void*) &mainIPserver, (void*) &ctime);
 
         //Interupt handler for Control+c
         signal(SIGINT, ctrlC_handler);
 
-        /* start cyclic part */
-        ecat_initialize(argv[1]);
+        // Start the EtherCAT driver
+        ecat_driver(argv[1]);
+
+        // TODO: Shutdown all networkServer threads
+
+        if (pthread_mutex_destroy(&printf_lock) != 0) {
+            perror("ERROR pthread_mutex_destroy has failed for printf_lock");
+            exit(1);
+        }
     }
     else {
         printf("Usage:    daemon ifname\n");
         printf("  ifname:   Communication interface, e.g. eth1\n");
     }
 
-    printf("End program\n");
+    printf("Done\n"); // Some threads may still be running here; mutex would probably be good.
     return (0);
 }
 

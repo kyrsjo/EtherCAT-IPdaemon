@@ -29,8 +29,8 @@ struct IPserverThreads {
 };
 
 // Functions        ************************************************************************
-int writeMapping(char* buff_out, struct mappings_PDO* mapping, int connfd);
-void chatThread( void* ptr );
+int writeMapping ( char* buff_out, struct mappings_PDO* mapping, int connfd );
+void chatThread  ( void* ptr );
 void mainIPserver( void* ptr );
 
 #endif
