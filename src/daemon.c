@@ -162,6 +162,137 @@ char* dtype2string(uint16 dtype, char* hstr) {
     return hstr;
 }
 
+// Modified version of test/linux/slaveinfo/slaveinfo.c::SDO2string()
+int PODval2string(struct mappings_PDO* mapping, char* buff, int bufflen) {
+    //int l = sizeof(usdo) - 1, i;
+   uint8 *u8;
+   int8 *i8;
+   uint16 *u16;
+   int16 *i16;
+   uint32 *u32;
+   int32 *i32;
+   uint64 *u64;
+   int64 *i64;
+   float *sr;
+   double *dr;
+   char es[32];
+
+   //memset(&usdo, 0, 128);
+   //ec_SDOread(slave, index, subidx, FALSE, &l, &usdo, EC_TIMEOUTRXM);
+   //if (EcatError)
+   //{
+   //   return ec_elist2string();
+   //}
+   //else
+   //{
+   switch(mapping->dataType) {
+   /*
+   case ECT_BOOLEAN:
+       u8 = (uint8*) &usdo[0];
+       if (*u8) sprintf(hstr, "TRUE");
+       else sprintf(hstr, "FALSE");
+       break;
+   */
+
+   case ECT_INTEGER8:
+       i8 = (int8*) &(IOmap[mapping->offset]);
+       if(mapping->bitoff != 0) goto allignmentError;
+       snprintf(buff, bufflen, "0x%2.2x %d", *i8, *i8);
+       break;
+
+   case ECT_INTEGER16:
+       i16 = (int16*) &(IOmap[mapping->offset]);
+       if(mapping->bitoff != 0) goto allignmentError;
+       snprintf(buff, bufflen, "0x%4.4x %d", *i16, *i16);
+       break;
+
+   case ECT_INTEGER32:
+   case ECT_INTEGER24:
+       i32 = (int32*) &(IOmap[mapping->offset]);
+       if(mapping->bitoff != 0) goto allignmentError;
+       snprintf(buff, bufflen, "0x%8.8x %d", *i32, *i32);
+       break;
+
+   case ECT_INTEGER64:
+       i64 = (int64*) &(IOmap[mapping->offset]);
+       if(mapping->bitoff != 0) goto allignmentError;
+       snprintf(buff, bufflen, "0x%16.16"PRIx64" %"PRId64, *i64, *i64);
+       break;
+
+   case ECT_UNSIGNED8:
+       u8 = (uint8*) &(IOmap[mapping->offset]);
+       if(mapping->bitoff != 0) goto allignmentError;
+       snprintf(buff, bufflen, "0x%2.2x %u", *u8, *u8);
+       break;
+
+   case ECT_UNSIGNED16:
+       u16 = (uint16*) &(IOmap[mapping->offset]);
+       if(mapping->bitoff != 0) goto allignmentError;
+       snprintf(buff, bufflen, "0x%4.4x %u", *u16, *u16);
+       break;
+
+   case ECT_UNSIGNED32:
+   case ECT_UNSIGNED24:
+       u32 = (uint32*) &(IOmap[mapping->offset]);
+       if(mapping->bitoff != 0) goto allignmentError;
+       snprintf(buff, bufflen, "0x%8.8x %u", *u32, *u32);
+       break;
+
+   case ECT_UNSIGNED64:
+       u64 = (uint64*) &(IOmap[mapping->offset]);
+       if(mapping->bitoff != 0) goto allignmentError;
+       snprintf(buff, bufflen, "0x%16.16"PRIx64" %"PRIu64, *u64, *u64);
+       break;
+
+   case ECT_REAL32:
+       sr = (float*) &(IOmap[mapping->offset]);
+       if(mapping->bitoff != 0) goto allignmentError;
+       snprintf(buff, bufflen, "%f", *sr);
+       break;
+
+   case ECT_REAL64:
+       dr = (double*) &(IOmap[mapping->offset]);
+       if(mapping->bitoff != 0) goto allignmentError;
+       snprintf(buff, bufflen, "%f", *dr);
+       break;
+
+   /*
+   case ECT_BIT1:
+   case ECT_BIT2:
+   case ECT_BIT3:
+   case ECT_BIT4:
+   case ECT_BIT5:
+   case ECT_BIT6:
+   case ECT_BIT7:
+   case ECT_BIT8:
+       u8 = (uint8*) &usdo[0];
+       sprintf(hstr, "0x%x", *u8);
+       break;
+
+   case ECT_VISIBLE_STRING:
+       strcpy(hstr, usdo);
+       break;
+
+   case ECT_OCTET_STRING:
+       hstr[0] = 0x00;
+       for (i = 0 ; i < l ; i++) {
+           sprintf(es, "0x%2.2x ", usdo[i]);
+           strcat( hstr, es);
+       }
+       break;
+   */
+
+   default:
+       snprintf(buff, bufflen, "Unknown type");
+   }
+   return 1; //success
+
+ allignmentError:
+   snprintf(buff, bufflen, "ALLIGNMENT ERROR");
+   return 0; //failure
+}
+
+
 struct mappings_PDO* fill_mapping_list (uint16 slave, struct mappings_PDO* map_tail, uint16 PDOassign, size_t IOmapoffset) {
     // Fill the linked lists mapping_out and mapping_in
     // This code is is very close to test/linux/slaveinfo/slaveinfo.c::si_PDOassign()
@@ -564,9 +695,12 @@ struct IPserverThreads IPservers[NUMIPSERVERS];
 #define BUFFLEN 1024
 int writeMapping(char* buff_out, struct mappings_PDO* mapping, int connfd) {
     //Helper function for chatThread()
-    char hstr[1024]; // String buffer for output
+
+    char hstr[BUFFLEN]; // String buffer for conversion functions
+    memset(hstr,0,BUFFLEN);
+
     int numChars = snprintf(buff_out, BUFFLEN,
-                            "  [0x%4.4X.%1d] %d 0x%4.4X:0x%2.2X 0x%2.2X %-12s %s\n",
+                            "  [0x%4.4X.%1d] %d:0x%4.4X:0x%2.2X 0x%2.2X %-12s %s\n",
                             mapping->offset, mapping->bitoff,
                             mapping->slaveIdx, mapping->idx, mapping->subidx,
                             mapping->bitlen, dtype2string(mapping->dataType, hstr), mapping->name);
@@ -588,6 +722,9 @@ void chatThread(void* ptr) {
     char buff_out[BUFFLEN];
     memset(buff_in,       0, BUFFLEN);
     memset(buff_out,      0, BUFFLEN);
+
+    char hstr[BUFFLEN]; // String buffer for conversion functions
+    memset(hstr,0,BUFFLEN);
 
     boolean didRepeat     = FALSE;
     char    buff_in_prev[BUFFLEN];
@@ -727,11 +864,11 @@ void chatThread(void* ptr) {
             }
         }
         else if (!strncmp(buff_in, "meta ",    5))  {  // meta slave:idx:subidx
-            //Metadata about a given slave or all slaves
+            //Metadata about a given PDO
             uint16 slave  = 0;
             uint16 idx    = 0;
             uint8  subidx = 0;
-            if (sscanf(buff_in,"info %hi:%hx:%hhx", &slave, &idx, &subidx) == 3){
+            if (sscanf(buff_in,"meta %hi:%hx:%hhx", &slave, &idx, &subidx) == 3){
                 printf("%d:%x:%x\n", slave,idx,subidx);
             }
             else {
@@ -748,7 +885,37 @@ void chatThread(void* ptr) {
 
         }
         else if (!strncmp(buff_in, "get ",     4))  {  // get slave:idx:subidx
-            //int slave = 0;
+            //Data from a given PDO
+            uint16 slave  = 0;
+            uint16 idx    = 0;
+            uint8  subidx = 0;
+            if (sscanf(buff_in,"get %hi:%hx:%hhx", &slave, &idx, &subidx) != 3){
+                strncpy(buff_out, "err: get got bad args\n", BUFFLEN);
+                write(myThread->connfd, buff_out, BUFFLEN);
+                memset(buff_out,0,BUFFLEN);
+                goto donecmds;
+            }
+
+            printf("%d:%x:%x\n", slave,idx,subidx);
+
+            struct mappings_PDO* dataMapping = get_address(slave, idx, subidx, mapping_in);
+            if (dataMapping == NULL) {
+                snprintf(buff_out, BUFFLEN, "err: POD address %d:%x:%x not recognized (searched for inputs)\n", slave,idx,subidx);
+                write(myThread->connfd, buff_out, BUFFLEN);
+                memset(buff_out,0,BUFFLEN);
+                goto donecmds;
+            }
+
+            pthread_mutex_lock(&lock);
+
+            PODval2string(dataMapping, hstr, BUFFLEN);
+            pthread_mutex_unlock(&lock);
+
+            snprintf(buff_out, BUFFLEN, "  %s\n", hstr);
+            write(myThread->connfd, buff_out, BUFFLEN);
+            memset(hstr,0,BUFFLEN);
+            memset(buff_out,0,BUFFLEN);
+
         }
         else {                                      // (unknown command)
             snprintf(buff_out, BUFFLEN, "err: unknown command '%s'\n",buff_in);
@@ -756,7 +923,8 @@ void chatThread(void* ptr) {
             memset(buff_out,0,BUFFLEN);
         }
 
-    donecmds:
+    donecmds: // Escape from inside an input handler
+
         //Tell the client that the response is finished
         strncpy(buff_out,"ok\n",BUFFLEN);
         write(myThread->connfd, buff_out, BUFFLEN);
@@ -775,7 +943,8 @@ void chatThread(void* ptr) {
         memset(buff_in,0,BUFFLEN);
     }
 
- endcom:
+ endcom: // Escape from the loop
+
     printf("Finished: -- slot %d disconnecting from %s \n", myThread->ipServerNum, inet_ntoa(myThread->client.sin_addr));
     memset(buff_out, 0, BUFFLEN);
 
