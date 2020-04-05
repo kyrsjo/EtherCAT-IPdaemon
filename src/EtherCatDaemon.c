@@ -1,12 +1,19 @@
-/** \file
- * \brief Example code for Simple Open EtherCAT master
+/*
+ * EtherCAT IP daemon
  *
- * Usage : simple_test [ifname1]
- * ifname is NIC interface, f.e. eth0
+ * This code is reading data from an EtherCAT PLC using the SOEM libary.
+ * No control loops etc. are implemented in this code.
+ * This code is intended for research purposes only.
  *
- * This is a minimal test.
+ * The code is partially based on the example codes in SOEM, especially simple_example.c and slaveinfo.c.
  *
- * (c)Arthur Ketels 2010 - 2011
+ * To test it, start the program, then connect to it with a telnet client in line mode on port 4200.
+ * The 'help' command will get you started.
+ *
+ * Licensed under the GNU General Public License version 2 with exceptions.
+ * See LICENSE file in the SOEM root for full license information.
+ *
+ * K. Sjobak, 2020.
  */
 
 #include "EtherCatDaemon.h"
@@ -30,21 +37,10 @@ volatile sig_atomic_t gotCtrlC = 0;
 // File-global data ************************************************************************
 
 //Persistent threads
-OSAL_THREAD_HANDLE thread_PLCwatch;
-pthread_t thread_communicate;
-
+OSAL_THREAD_HANDLE thread_PLCwatch; // Slave error handling
+pthread_t thread_communicate;       // TCP/IP communications
 
 // Functions        ************************************************************************
-
-void ctrlC_handler(int signal){
-    if(gotCtrlC==1) {
-        //User is desperate. Kill it NOW.
-        abort();
-    }
-    else {
-        gotCtrlC = 1;
-    }
-}
 
 int main(int argc, char *argv[]) {
     printf("SOEM (Simple Open EtherCAT Master)\nSimple test\n");
@@ -74,4 +70,14 @@ int main(int argc, char *argv[]) {
 
     printf("End program\n");
     return (0);
+}
+
+void ctrlC_handler(int signal){
+    if(gotCtrlC==1) {
+        //User is desperate. Kill it NOW.
+        abort();
+    }
+    else {
+        gotCtrlC = 1;
+    }
 }
