@@ -12,8 +12,8 @@
 // Global data      ************************************************************************
 pthread_mutex_t IOmap_lock; //Lock for the IOmap; defined in ecatDriver.h
 
-boolean inOP;     // PLC is in mode OP
-boolean updating; // IOmap is updating
+volatile boolean inOP;     // PLC is in mode OP
+volatile boolean updating; // IOmap is updating
 
 //Note about these linked lists: The last entry is always completely set to 0, acting similar to a "string terminator \0".
 // This lead to a less complex implementation than setting the last ->next==NULL.
@@ -142,125 +142,126 @@ char* dtype2string(uint16 dtype, char* hstr, int bufflen) {
 // Modified version of SOEM/test/linux/slaveinfo/slaveinfo.c::SDO2string()
 int PDOval2string(struct mappings_PDO* mapping, char* buff, int bufflen) {
 
-   uint8 *u8;
-   int8 *i8;
-   uint16 *u16;
-   int16 *i16;
-   uint32 *u32;
-   int32 *i32;
-   uint64 *u64;
-   int64 *i64;
-   float *sr;
-   double *dr;
+    uint8 *u8;
+    int8 *i8;
+    uint16 *u16;
+    int16 *i16;
+    uint32 *u32;
+    int32 *i32;
+    uint64 *u64;
+    int64 *i64;
+    float *sr;
+    double *dr;
 
-   const int es_len = 32;
-   char es[es_len];
+    const int es_len = 32;
+    char es[es_len];
 
-   switch(mapping->dataType) {
-   /*
-   case ECT_BOOLEAN:
-       u8 = (uint8*) &usdo[0];
-       if (*u8) sprintf(hstr, "TRUE");
-       else sprintf(hstr, "FALSE");
+    switch(mapping->dataType) {
+    /*
+    case ECT_BOOLEAN:
+        u8 = (uint8*) &usdo[0];
+        if (*u8) sprintf(hstr, "TRUE");
+        else sprintf(hstr, "FALSE");
        break;
-   */
+    */
 
-   case ECT_INTEGER8:
-       i8 = (int8*) &(IOmap[mapping->offset]);
-       if(mapping->bitoff != 0) goto allignmentError;
-       snprintf(buff, bufflen, "0x%2.2x %d", *i8, *i8);
-       break;
+    case ECT_INTEGER8:
+        i8 = (int8*) &(IOmap[mapping->offset]);
+        if(mapping->bitoff != 0) goto allignmentError;
+        snprintf(buff, bufflen, "0x%2.2x %d", *i8, *i8);
+        break;
 
-   case ECT_INTEGER16:
-       i16 = (int16*) &(IOmap[mapping->offset]);
-       if(mapping->bitoff != 0) goto allignmentError;
-       snprintf(buff, bufflen, "0x%4.4x %d", *i16, *i16);
-       break;
+    case ECT_INTEGER16:
+        i16 = (int16*) &(IOmap[mapping->offset]);
+        if(mapping->bitoff != 0) goto allignmentError;
+        snprintf(buff, bufflen, "0x%4.4x %d", *i16, *i16);
+        break;
 
-   case ECT_INTEGER32:
-   case ECT_INTEGER24:
-       i32 = (int32*) &(IOmap[mapping->offset]);
-       if(mapping->bitoff != 0) goto allignmentError;
-       snprintf(buff, bufflen, "0x%8.8x %d", *i32, *i32);
-       break;
+    case ECT_INTEGER32:
+    case ECT_INTEGER24:
+        i32 = (int32*) &(IOmap[mapping->offset]);
+        if(mapping->bitoff != 0) goto allignmentError;
+        snprintf(buff, bufflen, "0x%8.8x %d", *i32, *i32);
+        break;
 
-   case ECT_INTEGER64:
-       i64 = (int64*) &(IOmap[mapping->offset]);
-       if(mapping->bitoff != 0) goto allignmentError;
-       snprintf(buff, bufflen, "0x%16.16"PRIx64" %"PRId64, *i64, *i64);
-       break;
+    case ECT_INTEGER64:
+        i64 = (int64*) &(IOmap[mapping->offset]);
+        if(mapping->bitoff != 0) goto allignmentError;
+        snprintf(buff, bufflen, "0x%16.16"PRIx64" %"PRId64, *i64, *i64);
+        break;
 
-   case ECT_UNSIGNED8:
-       u8 = (uint8*) &(IOmap[mapping->offset]);
-       if(mapping->bitoff != 0) goto allignmentError;
-       snprintf(buff, bufflen, "0x%2.2x %u", *u8, *u8);
-       break;
+    case ECT_UNSIGNED8:
+        u8 = (uint8*) &(IOmap[mapping->offset]);
+        if(mapping->bitoff != 0) goto allignmentError;
+        snprintf(buff, bufflen, "0x%2.2x %u", *u8, *u8);
+        break;
 
-   case ECT_UNSIGNED16:
-       u16 = (uint16*) &(IOmap[mapping->offset]);
-       if(mapping->bitoff != 0) goto allignmentError;
-       snprintf(buff, bufflen, "0x%4.4x %u", *u16, *u16);
-       break;
+    case ECT_UNSIGNED16:
+        u16 = (uint16*) &(IOmap[mapping->offset]);
+        if(mapping->bitoff != 0) goto allignmentError;
+        snprintf(buff, bufflen, "0x%4.4x %u", *u16, *u16);
+        break;
 
-   case ECT_UNSIGNED32:
-   case ECT_UNSIGNED24:
-       u32 = (uint32*) &(IOmap[mapping->offset]);
-       if(mapping->bitoff != 0) goto allignmentError;
-       snprintf(buff, bufflen, "0x%8.8x %u", *u32, *u32);
-       break;
+    case ECT_UNSIGNED32:
+    case ECT_UNSIGNED24:
+        u32 = (uint32*) &(IOmap[mapping->offset]);
+        if(mapping->bitoff != 0) goto allignmentError;
+        snprintf(buff, bufflen, "0x%8.8x %u", *u32, *u32);
+        break;
 
-   case ECT_UNSIGNED64:
-       u64 = (uint64*) &(IOmap[mapping->offset]);
-       if(mapping->bitoff != 0) goto allignmentError;
-       snprintf(buff, bufflen, "0x%16.16"PRIx64" %"PRIu64, *u64, *u64);
-       break;
+    case ECT_UNSIGNED64:
+        u64 = (uint64*) &(IOmap[mapping->offset]);
+        if(mapping->bitoff != 0) goto allignmentError;
+        snprintf(buff, bufflen, "0x%16.16"PRIx64" %"PRIu64, *u64, *u64);
+        break;
 
-   case ECT_REAL32:
-       sr = (float*) &(IOmap[mapping->offset]);
-       if(mapping->bitoff != 0) goto allignmentError;
-       snprintf(buff, bufflen, "%f", *sr);
-       break;
+    case ECT_REAL32:
+        sr = (float*) &(IOmap[mapping->offset]);
+        if(mapping->bitoff != 0) goto allignmentError;
+        snprintf(buff, bufflen, "%f", *sr);
+        break;
 
-   case ECT_REAL64:
-       dr = (double*) &(IOmap[mapping->offset]);
-       if(mapping->bitoff != 0) goto allignmentError;
-       snprintf(buff, bufflen, "%f", *dr);
-       break;
+    case ECT_REAL64:
+        dr = (double*) &(IOmap[mapping->offset]);
+        if(mapping->bitoff != 0) goto allignmentError;
+        snprintf(buff, bufflen, "%f", *dr);
+        break;
 
-   /*
-   case ECT_BIT1:
-   case ECT_BIT2:
-   case ECT_BIT3:
-   case ECT_BIT4:
-   case ECT_BIT5:
-   case ECT_BIT6:
-   case ECT_BIT7:
-   case ECT_BIT8:
-       u8 = (uint8*) &usdo[0];
-       sprintf(hstr, "0x%x", *u8);
-       break;
+    //TODO!!!!
+    /*
+    case ECT_BIT1:
+    case ECT_BIT2:
+    case ECT_BIT3:
+    case ECT_BIT4:
+    case ECT_BIT5:
+    case ECT_BIT6:
+    case ECT_BIT7:
+    case ECT_BIT8:
+        u8 = (uint8*) &usdo[0];
+        sprintf(hstr, "0x%x", *u8);
+        break;
 
-   case ECT_VISIBLE_STRING:
-       strcpy(hstr, usdo);
-       break;
+    case ECT_VISIBLE_STRING:
+        strcpy(hstr, usdo);
+        break;
 
-   case ECT_OCTET_STRING:
-       hstr[0] = 0x00;
-       for (i = 0 ; i < l ; i++) {
-           sprintf(es, "0x%2.2x ", usdo[i]);
-           strcat( hstr, es);
-       }
-       break;
-   */
+    case ECT_OCTET_STRING:
+        hstr[0] = 0x00;
+        for (i = 0 ; i < l ; i++) {
+            sprintf(es, "0x%2.2x ", usdo[i]);
+            strcat( hstr, es);
+        }
+        break;
+    */
 
-   default:
-       snprintf(buff, bufflen, "Unknown type");
-   }
-   return 1; //success
+    default:
+        snprintf(buff, bufflen, "Unknown type");
+    }
+    return 1; //success
 
- allignmentError:
-   snprintf(buff, bufflen, "ALLIGNMENT ERROR");
-   return 0; //failure
+allignmentError:
+    snprintf(buff, bufflen, "ALLIGNMENT ERROR");
+    return 0; //failure
 }
 
 

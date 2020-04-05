@@ -35,8 +35,8 @@ struct mappings_PDO {
 //The global IOmap into which all the process data is mapped
 extern pthread_mutex_t IOmap_lock; //Lock for the IOmap;
 
-extern boolean inOP;     // PLC is in mode OP
-extern boolean updating; // IOmap is updating
+extern volatile boolean inOP;     // PLC is in mode OP
+extern volatile boolean updating; // IOmap is updating
 
 //Note about these linked lists: The last entry is always completely set to 0, acting similar to a "string terminator \0".
 // This lead to a less complex implementation than setting the last ->next==NULL.

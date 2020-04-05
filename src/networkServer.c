@@ -62,6 +62,14 @@ void chatThread(void* ptr) {
     memset(buff_in_prev,  0, BUFFLEN);
 
     while (1) {
+        //Check that we didn't get a SIGPIPE
+        if (myThread->gotSIGPIPE == 1) {
+            pthread_mutex_lock(&printf_lock);
+            printf("slot %d got SIGPIPE (client %s) \n", myThread->ipServerNum, inet_ntoa(myThread->client.sin_addr));
+            pthread_mutex_unlock(&printf_lock);
+            goto endcom;
+        }
+
         //Tell the client that we are ready for the next command
         strncpy(buff_out,"ok\n",BUFFLEN);
         write(myThread->connfd, buff_out, BUFFLEN);
@@ -141,53 +149,56 @@ void chatThread(void* ptr) {
                 strncpy(buff_out, "err: not inOP or not updating\n", BUFFLEN);
                 write(myThread->connfd, buff_out, BUFFLEN);
                 memset(buff_out, 0, BUFFLEN);
+                goto donecmds;
             }
-            else {
-                pthread_mutex_lock(&IOmap_lock);
+            
+            pthread_mutex_lock(&IOmap_lock);
 
-                snprintf(buff_out, BUFFLEN, "  T:%" PRId64 ";\n",ec_DCtime);
+            snprintf(buff_out, BUFFLEN, "  T:%" PRId64 ";\n",ec_DCtime);
+            write(myThread->connfd, buff_out, BUFFLEN);
+            memset(buff_out, 0, BUFFLEN);
+
+            for (uint16 slave = 1; slave <= ec_slavecount; slave++) {
+                int buffUsed = 0;
+
+                buffUsed += snprintf(buff_out+buffUsed, BUFFLEN-buffUsed, "  slave[%d]:", slave);
+                buffUsed += snprintf(buff_out+buffUsed, BUFFLEN-buffUsed, " O:");
+
+                int nChars = ec_slave[slave].Obytes;
+                if (nChars==0 && ec_slave[slave].Obits > 0) nChars = 1;
+                for(int j = 0 ; j < nChars ; j++) {
+                    buffUsed +=snprintf(buff_out+buffUsed, BUFFLEN-buffUsed,
+                                        " %2.2x", *(ec_slave[slave].outputs + j));
+                }
+
+                buffUsed += snprintf(buff_out+buffUsed, BUFFLEN-buffUsed, " I:");
+
+                nChars = ec_slave[slave].Ibytes;
+                if (nChars==0 && ec_slave[slave].Ibits > 0) nChars = 1;
+                for(int j = 0 ; j < nChars ; j++) {
+                    buffUsed +=snprintf(buff_out+buffUsed, BUFFLEN-buffUsed,
+                                        " %2.2x", *(ec_slave[slave].inputs + j));
+                }
+
+                buffUsed += snprintf(buff_out+buffUsed, BUFFLEN-buffUsed, "\n", slave);
+
+                if (buffUsed >= BUFFLEN) {
+                    pthread_mutex_lock(&printf_lock);
+                    printf("ERROR: buff_out overextended\n");
+                    pthread_mutex_unlock(&printf_lock);
+                    exit(1);
+                }
                 write(myThread->connfd, buff_out, BUFFLEN);
                 memset(buff_out, 0, BUFFLEN);
-
-                for (uint16 slave = 1; slave <= ec_slavecount; slave++) {
-                    int buffUsed = 0;
-
-                    buffUsed += snprintf(buff_out+buffUsed, BUFFLEN-buffUsed, "  slave[%d]:", slave);
-                    buffUsed += snprintf(buff_out+buffUsed, BUFFLEN-buffUsed, " O:");
-
-                    int nChars = ec_slave[slave].Obytes;
-                    if (nChars==0 && ec_slave[slave].Obits > 0) nChars = 1;
-                    for(int j = 0 ; j < nChars ; j++) {
-                        buffUsed +=snprintf(buff_out+buffUsed, BUFFLEN-buffUsed,
-                                            " %2.2x", *(ec_slave[slave].outputs + j));
-                    }
-
-                    buffUsed += snprintf(buff_out+buffUsed, BUFFLEN-buffUsed, " I:");
-
-                    nChars = ec_slave[slave].Ibytes;
-                    if (nChars==0 && ec_slave[slave].Ibits > 0) nChars = 1;
-                    for(int j = 0 ; j < nChars ; j++) {
-                        buffUsed +=snprintf(buff_out+buffUsed, BUFFLEN-buffUsed,
-                                            " %2.2x", *(ec_slave[slave].inputs + j));
-                    }
-
-                    buffUsed += snprintf(buff_out+buffUsed, BUFFLEN-buffUsed, "\n", slave);
-
-                    if (buffUsed >= BUFFLEN) {
-                        printf("ERROR: buff_out overextended\n");
-                        exit(1);
-                    }
-                    write(myThread->connfd, buff_out, BUFFLEN);
-                    memset(buff_out, 0, BUFFLEN);
-                }
-                pthread_mutex_unlock(&IOmap_lock);
             }
+            pthread_mutex_unlock(&IOmap_lock);
+
         }
         else if (!strncmp(buff_in, "meta all", 8))  {  // meta all
             //Metadata about all slaves/indexes/subindexes
             struct mappings_PDO* mapping_active;
 
-            strncpy(buff_out, "OUTPUTS:\n", BUFFLEN);
+            strncpy(buff_out, "  OUTPUTS:\n", BUFFLEN);
             write(myThread->connfd, buff_out, BUFFLEN);
 
             mapping_active = mapping_out;
@@ -196,7 +207,7 @@ void chatThread(void* ptr) {
                 mapping_active = mapping_active->next;
             }
 
-            strncpy(buff_out, "INPUTS:\n", BUFFLEN);
+            strncpy(buff_out, "  INPUTS:\n", BUFFLEN);
             write(myThread->connfd, buff_out, BUFFLEN);
             memset(buff_out,0,BUFFLEN);
 
@@ -246,13 +257,32 @@ void chatThread(void* ptr) {
                 goto donecmds;
             }
 
+            if (!inOP || !updating) {
+                strncpy(buff_out, "err: not inOP or not updating\n", BUFFLEN);
+                write(myThread->connfd, buff_out, BUFFLEN);
+                memset(buff_out, 0, BUFFLEN);
+                goto donecmds;
+            }
+
+            int buffUsed = 0;
             pthread_mutex_lock(&IOmap_lock);
             PDOval2string(dataMapping, hstr, BUFFLEN);
             pthread_mutex_unlock(&IOmap_lock);
-
-            snprintf(buff_out, BUFFLEN, "  %s\n", hstr);
-            write(myThread->connfd, buff_out, BUFFLEN);
+            buffUsed += snprintf(buff_out, BUFFLEN, "  %s", hstr);
             memset(hstr,0,BUFFLEN);
+
+            dtype2string(dataMapping->dataType, hstr, BUFFLEN);
+            buffUsed += snprintf(buff_out+buffUsed, BUFFLEN-buffUsed, "  %s\n", hstr);
+            memset(hstr,0,BUFFLEN);
+
+            if (buffUsed >= BUFFLEN) {
+                pthread_mutex_lock(&printf_lock);
+                printf("ERROR: buff_out overextended\n");
+                pthread_mutex_unlock(&printf_lock);
+                exit(1);
+            }
+
+            write(myThread->connfd, buff_out, BUFFLEN);
             memset(buff_out,0,BUFFLEN);
 
         }
@@ -277,7 +307,7 @@ void chatThread(void* ptr) {
         memset(buff_in,0,BUFFLEN);
     }
 
- endcom: // Escape from the loop
+endcom: // Escape from the loop
 
     pthread_mutex_lock(&printf_lock);
     printf("Finished: -- slot %d disconnecting from %s \n", myThread->ipServerNum, inet_ntoa(myThread->client.sin_addr));
@@ -289,15 +319,18 @@ void chatThread(void* ptr) {
 
     close(myThread->connfd);
     myThread->inUse = 0;
+
+    pthread_exit(0);
 }
 
 void mainIPserver( void* ptr ) {
-    //Print data in memory when hitting ENTER
-
     // IP connection handling and server spinup
     // Inspired by https://www.geeksforgeeks.org/tcp-server-client-implementation-in-c/
 
     (void)ptr; // Not used, reference it to quiet down the compiler
+
+    //Setup SIGPIPE handler
+    signal(SIGPIPE, &SIGPIPE_handler);
 
     //Initialize IPservers array
     memset(IPservers, 0, sizeof(struct IPserverThreads)*NUMIPSERVERS);
@@ -384,4 +417,21 @@ void mainIPserver( void* ptr ) {
         // Should probably be moved to "if (ipServerNum == NUMIPSERVERS)"
         osal_usleep(IPSERVER_PAUSE);
     }
+}
+
+void SIGPIPE_handler (int signal) {
+    //Interupt handler for SIGPIPE
+    //Handle it equivalent to command 'bye'
+
+    pthread_t thisThread = pthread_self();
+
+    int i;
+    for (i = 0; i < NUMIPSERVERS; i++) {
+        if (IPservers[i].thread == thisThread) break;
+    }
+    if (i == NUMIPSERVERS) {
+        abort(); // The thread wasn't found.
+    }
+    IPservers[i].gotSIGPIPE = 1;
+
 }

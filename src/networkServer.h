@@ -3,6 +3,8 @@
 
 #include <netinet/in.h>
 
+#include <signal.h>
+
 #include "ecatDriver.h"
 
 // Configuration    ************************************************************************
@@ -26,11 +28,15 @@ struct IPserverThreads {
     pthread_t thread;
     int  ipServerNum;
     char inUse;
+
+    volatile sig_atomic_t gotSIGPIPE;
+
 };
 
 // Functions        ************************************************************************
 int writeMapping ( char* buff_out, struct mappings_PDO* mapping, int connfd );
 void chatThread  ( void* ptr );
 void mainIPserver( void* ptr );
+void SIGPIPE_handler (int signal);
 
 #endif
