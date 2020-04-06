@@ -203,7 +203,7 @@ int parseConfigFile() {
         }
 
         //Should never reach here:
-        fprintf(stderr, "Error in parseConfigFile(), did not understand '%s'", tmp);
+        fprintf(stderr, "Error in parseConfigFile(), did not understand '%s'\n", tmp);
         return 1;
     }
 

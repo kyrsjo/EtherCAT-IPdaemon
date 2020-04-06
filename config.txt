@@ -1,0 +1,19 @@
+! Config file for EtherCAT IP daemon
+! Lines starting with '!' and blank lines are ignored
+! Leading whitespace is ignored
+! Anything on a line after the expected syntax is ignored
+
+! General config (key val):
+
+! User name to drop privilies to (default if omitted: nobody)
+DROPPRIVS_USER nobody
+
+! Allow IP clients to call 'quit' (YES/NO)? (default if omitted: NO)
+ALLOWQUIT NO
+
+!How many bytes to allocate for IOmap? (default if omitted: 4096)
+IOMAP_SIZE 4096
+
+! Device initializations:
+!asd
+

@@ -14,4 +14,12 @@ add_executable(daemon ${SOURCES})
 target_link_libraries(daemon soem)
 #install(TARGETS daemon DESTINATION bin)
 
-#add_subdirectory(src)
+#Copy the config.txt the first time cmake is ran, then leave it alone
+if(EXISTS ${CMAKE_CURRENT_BINARY_DIR}/config.txt)
+  #do nothing
+  message("")
+  message("NOTE: config.txt already copied, do not overwrite!")
+  message("")
+else()
+  file(COPY ${CMAKE_CURRENT_SOURCE_DIR}/config.txt DESTINATION ${CMAKE_CURRENT_BINARY_DIR})
+endif()
