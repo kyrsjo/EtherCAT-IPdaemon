@@ -124,11 +124,14 @@ int parseConfigFile() {
     config_file.dropPrivs_username = NULL;
     config_file.allowQuit          = -1;
     config_file.iomap_size         = -1;
+    config_file.slaveInit          = malloc(sizeof(struct slave_init_cmd));
+    memset(config_file.slaveInit, 0, sizeof(struct slave_init_cmd));
+    config_file.slaveInit->next = NULL;
+
+    struct slave_init_cmd* slaveInit_tail = config_file.slaveInit;
 
     char* parseBuff = malloc(str_bufflen*sizeof(char));
-    int   parseInt1 = 0;
-    int   parseInt2 = 0;
-    int   parseInt3 = 0;
+    int   parseInt = 0;
 
     char*  line = NULL;
     size_t line_len = 0;
@@ -145,9 +148,8 @@ int parseConfigFile() {
         if(tmp[0]=='\0' || tmp[0]=='!') continue;
 
         memset(parseBuff,0,str_bufflen);
-        parseInt1 = 0;
-        parseInt2 = 0;
-        parseInt3 = 0;
+        parseInt = 0;
+
 
         printf("Parsing: '%s'\n",tmp);
 
@@ -185,22 +187,38 @@ int parseConfigFile() {
             continue;
         }
 
-        gotHits = sscanf(tmp, "IOMAP_SIZE %d", &parseInt1);
+        gotHits = sscanf(tmp, "IOMAP_SIZE %d", &parseInt);
         if (gotHits>0) {
             if (config_file.iomap_size != -1) {
                 fprintf(stderr, "Error in parseConfigFile(), got two IOMAP_SIZE!\n");
                 return 1;
             }
 
-            if (parseInt1 > 0) {
-                config_file.iomap_size = parseInt1;
+            if (parseInt > 0) {
+                config_file.iomap_size = parseInt;
             }
             else {
-                fprintf(stderr, "Error in parseConfigFile(), got invalid IOMAP_SIZE %d, expected > 0\n", parseInt1);
+                fprintf(stderr, "Error in parseConfigFile(), got invalid IOMAP_SIZE %d, expected > 0\n", parseInt);
                 return 1;
             }
             continue;
         }
+
+        gotHits = sscanf(tmp,"INITIALIZE %hi:%hx:%hhx %hx",
+                         &(slaveInit_tail->slaveIdx), &(slaveInit_tail->idx),
+                         &(slaveInit_tail->subidx),   &(slaveInit_tail->value)
+                        );
+        if (gotHits == 4) {
+            //Great! Found an INITIALIZE
+            // Append to the list:
+            slaveInit_tail->next  = malloc(sizeof(struct slave_init_cmd));
+            slaveInit_tail = slaveInit_tail->next;
+            memset(slaveInit_tail, 0, sizeof(struct slave_init_cmd));
+            slaveInit_tail->next = NULL;
+            continue;
+        }
+        memset(slaveInit_tail, 0, sizeof(struct slave_init_cmd));
+        slaveInit_tail->next = NULL;
 
         //Should never reach here:
         fprintf(stderr, "Error in parseConfigFile(), did not understand '%s'\n", tmp);
@@ -241,6 +259,17 @@ int parseConfigFile() {
     printf("  - dropPrivs_gid      = '%d'\n", config_file.dropPrivs_gid);
     printf("  - allowQuit          =  %s\n",  config_file.allowQuit==1 ? "YES" : "NO");
     printf("  - iomap_size         =  %d\n",  config_file.iomap_size);
+    printf("  - INITIALIZErs:\n");
+    slaveInit_tail = config_file.slaveInit;
+    while(slaveInit_tail->next != NULL){
+        printf("    -> %d:%x:%x -> %x\n",
+               slaveInit_tail->slaveIdx,
+               slaveInit_tail->idx,
+               slaveInit_tail->subidx,
+               slaveInit_tail->value
+              );
+        slaveInit_tail = slaveInit_tail->next;
+    }
 
     return 0; //success
 }

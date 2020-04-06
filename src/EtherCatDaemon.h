@@ -6,11 +6,26 @@
 
 #include <sys/types.h>
 
+#include "osal.h" //typedefs for uint8 etc.
+
 // Configuration    ************************************************************************
 
 #define CONFIGFILE_NAME "config.txt"
 
 // Data types       ************************************************************************
+struct slave_init_cmd {
+    //Static name of object
+    uint16 slaveIdx;
+    uint16 idx;
+    uint8  subidx;
+
+    //Value to write;
+    uint16 value;
+
+    //It's a linked list -> Pointer to the next one
+    struct slave_init_cmd* next;
+};
+
 struct config_file_data {
     //char wasParsed; // true (1) or false (0)
 
@@ -19,10 +34,15 @@ struct config_file_data {
     uid_t dropPrivs_uid;
     gid_t dropPrivs_gid;
 
-    char allowQuit; // true(1) or false(0)
+    // true(1) or false(0)
+    char allowQuit;
 
-    int iomap_size; //Size of IOmap allocation [bytes]
+    //Size of IOmap allocation [bytes]
+    int iomap_size;
 
+    //Head of linked list for slave initialization
+    // Last element is all-zeros, like for mapping_in and mapping_out.
+    struct slave_init_cmd* slaveInit;
 };
 
 // Global data      ************************************************************************

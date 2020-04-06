@@ -1,7 +1,7 @@
 #ifndef ecatDriver_h
 #define ecatDriver_h
 
-#include "osal.h" //typedefs for uint 8 etc.
+#include "osal.h" //typedefs for uint8 etc.
 
 // Configuration   ************************************************************************
 #ifndef EC_TIMEOUTMON // Allow setting from CMake

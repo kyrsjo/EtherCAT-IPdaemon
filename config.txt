@@ -14,6 +14,14 @@ ALLOWQUIT NO
 !How many bytes to allocate for IOmap? (default if omitted: 4096)
 IOMAP_SIZE 4096
 
-! Device initializations:
-!asd
+! Device initializations (example!):
 
+!Set channel 1 to pt1000
+!INITIALIZE 2:0x8000:0x19 2
+!Set channel 1 to four-wire-mode
+!INITIALIZE 2:0x8000:0x1a 2
+
+!Set channel 2 to pt1000
+!INITIALIZE 2:0x8010:0x19 2
+!Set channel 2 to four-wire-mode
+!INITIALIZE 2:0x8010:0x1a 2
