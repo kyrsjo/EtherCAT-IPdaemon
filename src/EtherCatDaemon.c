@@ -25,6 +25,9 @@
 #include <stdlib.h>
 #include <pthread.h>
 
+#include <pwd.h>
+#include <errno.h>
+
 #include "networkServer.h"
 #include "ecatDriver.h"
 
@@ -36,10 +39,15 @@ volatile sig_atomic_t gotCtrlC = 0;
 // Lock for stdin/stdout/stderr (used once we get into threading)
 pthread_mutex_t printf_lock;
 
+// Lock for rootprivs; cannot start IP server before this is released.
+pthread_mutex_t rootprivs_lock;
+
+//Data from the config file
+struct config_file_data config_file;
+
 // File-global data ************************************************************************
 
-//Persistent threads
-pthread_t thread_communicate;       // TCP/IP communications
+pthread_t thread_communicate; // TCP/IP communications persistent thread
 
 // Functions        ************************************************************************
 
@@ -48,8 +56,18 @@ int main(int argc, char *argv[]) {
     printf("*** For research purposes ONLY ***\n");
 
     if (argc == 2) {
+
+        if (pthread_mutex_init(&rootprivs_lock, NULL) != 0) {
+            perror("ERROR pthread_mutex_init has failed for printf_lock");
+            exit(1);
+        }
+        pthread_mutex_lock(&rootprivs_lock);
+
         // Read config file
-        //TODO
+        if(parseConfigFile()) {
+            fprintf(stderr,"Error while parsing config file.");
+            exit(1);
+        }
 
         if (pthread_mutex_init(&printf_lock, NULL) != 0) {
             perror("ERROR pthread_mutex_init has failed for printf_lock");
@@ -65,6 +83,12 @@ int main(int argc, char *argv[]) {
         ecat_driver(argv[1]);
 
         // TODO: Shutdown all networkServer threads
+        pthread_mutex_unlock(&rootprivs_lock);
+        if (pthread_mutex_destroy(&rootprivs_lock) != 0) {
+            perror("ERROR pthread_mutex_destroy has failed for rootprivs_lock");
+            exit(1);
+        }
+
 
         if (pthread_mutex_destroy(&printf_lock) != 0) {
             perror("ERROR pthread_mutex_destroy has failed for printf_lock");
@@ -78,6 +102,34 @@ int main(int argc, char *argv[]) {
 
     printf("Done\n"); // Some threads may still be running here; mutex would probably be good.
     return (0);
+}
+
+int parseConfigFile() {
+    printf("Parsing config file '%s'...\n", CONFIGFILE_NAME);
+
+    //config_file.dropPrivs_gid = 0;
+    config_file.dropPrivs_username = malloc(100*sizeof(char));
+    memset(config_file.dropPrivs_username,0,100);
+    strncpy(config_file.dropPrivs_username, "nobody", 100);
+
+    errno = 0;
+    struct passwd* s_passw = getpwnam(config_file.dropPrivs_username);
+    if (s_passw == NULL || errno) {
+        fprintf(stderr,"Error when reading info for user '%s'", config_file.dropPrivs_username);
+        return 1;
+    }
+
+    config_file.dropPrivs_uid = s_passw->pw_uid;
+    config_file.dropPrivs_gid = s_passw->pw_gid;
+
+    // Parse slave config
+
+    // Done!
+    printf("  Parse result:\n");
+    printf("  dropPrivs_username = '%s'\n", config_file.dropPrivs_username);
+    printf("  dropPrivs_uid      = '%d'\n", config_file.dropPrivs_uid);
+    printf("  dropPrivs_gid      = '%d'\n", config_file.dropPrivs_gid);
+    return 0; //success
 }
 
 void ctrlC_handler(int signal){

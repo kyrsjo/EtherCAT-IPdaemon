@@ -151,7 +151,7 @@ void chatThread(void* ptr) {
                 memset(buff_out, 0, BUFFLEN);
                 goto donecmds;
             }
-            
+
             pthread_mutex_lock(&IOmap_lock);
 
             snprintf(buff_out, BUFFLEN, "  T:%" PRId64 ";\n",ec_DCtime);
@@ -334,6 +334,9 @@ void mainIPserver( void* ptr ) {
 
     //Initialize IPservers array
     memset(IPservers, 0, sizeof(struct IPserverThreads)*NUMIPSERVERS);
+
+    //Wait for root privs to be dropped
+    pthread_mutex_lock(&rootprivs_lock);
 
     //Create the server socket...
     sockfd = socket(AF_INET, SOCK_STREAM, 0);

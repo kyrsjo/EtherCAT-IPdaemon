@@ -5,6 +5,8 @@
 #include <string.h>
 #include <stdlib.h>
 
+#include <unistd.h>
+
 #include "ethercat.h"
 
 #include "EtherCatDaemon.h"
@@ -512,8 +514,32 @@ void ecat_driver(char* ifname) {
         pthread_mutex_lock(&printf_lock);
         printf("ec_init on %s succeeded.\n",ifname);
         pthread_mutex_unlock(&printf_lock);
-        /* find and auto-config slaves */
 
+        /*  Drop superuser privileges in correct order */
+        pthread_mutex_lock(&printf_lock);
+        printf("Dropping root privilegies...\n");
+        pthread_mutex_unlock(&printf_lock);
+        if (setgid(config_file.dropPrivs_gid) == -1) {
+            pthread_mutex_lock(&printf_lock);
+            perror("Error during setgit()");
+            pthread_mutex_unlock(&printf_lock);
+            exit(1);
+        }
+        if (setuid(config_file.dropPrivs_uid) == -1) {
+            pthread_mutex_lock(&printf_lock);
+            perror("Error during setuid()");
+            pthread_mutex_unlock(&printf_lock);
+            exit(1);
+        }
+        //Unlock the rootprivs_lock; the TCP/IP server is now safe to start
+        pthread_mutex_unlock(&rootprivs_lock);
+
+        pthread_mutex_lock(&printf_lock);
+        printf("Now running as '%s'.\n",config_file.dropPrivs_username);
+        pthread_mutex_unlock(&printf_lock);
+
+
+        /* find and auto-config slaves */
         pthread_mutex_lock(&IOmap_lock); // Grab this lock untill we've done initializing
         if ( ec_config_init(FALSE) > 0 ) {
             pthread_mutex_lock(&printf_lock);
@@ -619,7 +645,7 @@ void ecat_driver(char* ifname) {
         pthread_mutex_lock(&printf_lock);
         printf("Closing SOEM socket...\n");
         pthread_mutex_unlock(&printf_lock);
-        
+
         ec_close();
     }
     else {
@@ -641,7 +667,7 @@ OSAL_THREAD_FUNC ecat_check( void *ptr ) {
     (void)ptr; // Not used, reference it to quiet down the compiler
 
     while(1) {
-        
+
         pthread_mutex_lock(&IOmap_lock);
         if( inOP && ((wkc < expectedWKC) || ec_group[currentgroup].docheckstate)) {
 
