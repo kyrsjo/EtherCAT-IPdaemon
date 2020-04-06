@@ -106,13 +106,19 @@ void chatThread(void* ptr) {
             goto endcom;
         }
         else if (!strncmp(buff_in, "quit",     4))  {  // quit
-            pthread_mutex_lock(&printf_lock);
-            printf("quit from slot %d address %s \n", myThread->ipServerNum, inet_ntoa(myThread->client.sin_addr));
-            pthread_mutex_unlock(&printf_lock);
-            close(myThread->connfd);
-            close(sockfd);
-            gotCtrlC=1;
-
+            if ( config_file.allowQuit == 1 ) {
+                pthread_mutex_lock(&printf_lock);
+                printf("quit from slot %d address %s \n", myThread->ipServerNum, inet_ntoa(myThread->client.sin_addr));
+                pthread_mutex_unlock(&printf_lock);
+                close(myThread->connfd);
+                close(sockfd);
+                gotCtrlC=1;
+            }
+            else {
+                strncpy(buff_out, "err: 'quit' disabled in config file. Treating as 'bye'.\n", BUFFLEN);
+                write(myThread->connfd, buff_out, BUFFLEN);
+                memset(buff_out,0,BUFFLEN);
+            }
             goto endcom;
         }
         else if (!strncmp(buff_in, "help",    4))  {  // help

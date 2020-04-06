@@ -25,7 +25,7 @@ struct mappings_PDO* mapping_in  = NULL; // Inputs, i.e. reading of voltages, en
 // File-global data ************************************************************************
 char IOmap[4096]; //TODO: Verify map size at runtime
 
-OSAL_THREAD_HANDLE thread_PLCwatch; // Slave error handling
+OSAL_THREAD_HANDLE thread_PLCwatch; // Slave error handling (disconnect etc.)
 
 // Work counter status, for error checking
 volatile int wkc;

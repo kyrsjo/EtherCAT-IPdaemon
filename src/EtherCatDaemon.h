@@ -19,6 +19,10 @@ struct config_file_data {
     uid_t dropPrivs_uid;
     gid_t dropPrivs_gid;
 
+    char allowQuit; // true(1) or false(0)
+
+    int iomap_size; //Size of IOmap allocation [bytes]
+
 };
 
 // Global data      ************************************************************************

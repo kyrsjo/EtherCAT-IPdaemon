@@ -52,7 +52,7 @@ pthread_t thread_communicate; // TCP/IP communications persistent thread
 // Functions        ************************************************************************
 
 int main(int argc, char *argv[]) {
-    printf("EtherCat daemon, using SOEM\n");
+    printf("EtherCat IP daemon, using SOEM\n");
     printf("*** For research purposes ONLY ***\n");
 
     if (argc == 2) {
@@ -65,7 +65,7 @@ int main(int argc, char *argv[]) {
 
         // Read config file
         if(parseConfigFile()) {
-            fprintf(stderr,"Error while parsing config file.");
+            fprintf(stderr,"Error while parsing config file.\n");
             exit(1);
         }
 
@@ -83,11 +83,15 @@ int main(int argc, char *argv[]) {
         ecat_driver(argv[1]);
 
         // TODO: Shutdown all networkServer threads
-        pthread_mutex_unlock(&rootprivs_lock);
-        if (pthread_mutex_destroy(&rootprivs_lock) != 0) {
-            perror("ERROR pthread_mutex_destroy has failed for rootprivs_lock");
-            exit(1);
-        }
+
+        //DON'T ACTUALLY UNLOCK UNTILL THE NETWORK SERVERS ARE DEAD,
+        // or we get a race condition where it can lock/unlock in main thread,
+        // while network servers are still running. Mostly harmless, but still...
+        //pthread_mutex_unlock(&rootprivs_lock);
+        //if (pthread_mutex_destroy(&rootprivs_lock) != 0) {
+        //    perror("ERROR pthread_mutex_destroy has failed for rootprivs_lock");
+        //    exit(1);
+        //}
 
 
         if (pthread_mutex_destroy(&printf_lock) != 0) {
@@ -105,30 +109,139 @@ int main(int argc, char *argv[]) {
 }
 
 int parseConfigFile() {
+    const size_t str_bufflen = 100; // !!!ALSO HARDCODED IN SSCANF (str_bufflen-1)!!!
+
     printf("Parsing config file '%s'...\n", CONFIGFILE_NAME);
 
-    //config_file.dropPrivs_gid = 0;
-    config_file.dropPrivs_username = malloc(100*sizeof(char));
-    memset(config_file.dropPrivs_username,0,100);
-    strncpy(config_file.dropPrivs_username, "nobody", 100);
+    errno = 0;
+    FILE* iFile = fopen(CONFIGFILE_NAME, "r");
+    if (iFile == NULL || errno) {
+        perror("Error on opening file");
+        return 1;
+    }
+
+    // Initialize
+    config_file.dropPrivs_username = NULL;
+    config_file.allowQuit          = -1;
+    config_file.iomap_size         = -1;
+
+    char* parseBuff = malloc(str_bufflen*sizeof(char));
+    int   parseInt1 = 0;
+    int   parseInt2 = 0;
+    int   parseInt3 = 0;
+
+    char*  line = NULL;
+    size_t line_len = 0;
+    ssize_t readLen = 0;
+    //Note: getline() handles allocations and reallocations
+    while ( (readLen = getline(&line, &line_len, iFile)) != -1) {
+        //PREPROCESSING OF LINE
+        // Delete the final '\n' from a line
+        char* tmp = strrchr(line,'\n');
+        if (tmp != NULL) *tmp='\0';
+        // Find first non-whitespace character
+        tmp = line + strspn(line," \t");
+        // Skip blank lines and comments
+        if(tmp[0]=='\0' || tmp[0]=='!') continue;
+
+        memset(parseBuff,0,str_bufflen);
+        parseInt1 = 0;
+        parseInt2 = 0;
+        parseInt3 = 0;
+
+        printf("Parsing: '%s'\n",tmp);
+
+        // Parse !
+        int gotHits = 0;
+
+        gotHits = sscanf(tmp, "DROPPRIVS_USER %99s", parseBuff);
+        if (gotHits>0) {
+            if (config_file.dropPrivs_username != NULL) {
+                fprintf(stderr, "Error in parseConfigFile(), got two DROPPRIVS_USER!\n");
+                return 1;
+            }
+            config_file.dropPrivs_username = parseBuff;
+            parseBuff = malloc(str_bufflen*sizeof(char));
+            continue;
+        }
+
+        gotHits = sscanf(tmp, "ALLOWQUIT %s", parseBuff);
+        if (gotHits>0) {
+            if (config_file.allowQuit != -1) {
+                fprintf(stderr, "Error in parseConfigFile(), got two ALLOWQUIT!\n");
+                return 1;
+            }
+
+            if      ( strncmp(parseBuff, "YES", str_bufflen) == 0 ) {
+                config_file.allowQuit = 1;
+            }
+            else if ( strncmp(parseBuff, "NO",  str_bufflen) == 0 ) {
+                config_file.allowQuit = 0;
+            }
+            else {
+                fprintf(stderr, "Error in parseConfigFile(), got invalid ALLOWQUIT '%s', expected 'YES' or 'NO'\n", parseBuff);
+                return 1;
+            }
+            continue;
+        }
+
+        gotHits = sscanf(tmp, "IOMAP_SIZE %d", &parseInt1);
+        if (gotHits>0) {
+            if (config_file.iomap_size != -1) {
+                fprintf(stderr, "Error in parseConfigFile(), got two IOMAP_SIZE!\n");
+                return 1;
+            }
+
+            if (parseInt1 > 0) {
+                config_file.iomap_size = parseInt1;
+            }
+            else {
+                fprintf(stderr, "Error in parseConfigFile(), got invalid IOMAP_SIZE %d, expected > 0\n", parseInt1);
+                return 1;
+            }
+            continue;
+        }
+
+        //Should never reach here:
+        fprintf(stderr, "Error in parseConfigFile(), did not understand '%s'", tmp);
+        return 1;
+    }
+
+    free(line);
+    fclose(iFile);
+
+    // Post-processing of parsed data & defaults
+    if (config_file.dropPrivs_username == NULL) {
+        config_file.dropPrivs_username = malloc(str_bufflen*sizeof(char));
+        strncpy(config_file.dropPrivs_username,"nobody",str_bufflen);
+    }
 
     errno = 0;
     struct passwd* s_passw = getpwnam(config_file.dropPrivs_username);
     if (s_passw == NULL || errno) {
-        fprintf(stderr,"Error when reading info for user '%s'", config_file.dropPrivs_username);
+        fprintf(stderr,"Error when reading info for user '%s'\n", config_file.dropPrivs_username);
         return 1;
     }
 
     config_file.dropPrivs_uid = s_passw->pw_uid;
     config_file.dropPrivs_gid = s_passw->pw_gid;
 
-    // Parse slave config
+    if (config_file.allowQuit == -1) {
+        config_file.allowQuit = 0; // Default: don't allow 'quit' command
+    }
+
+    if (config_file.iomap_size == -1) {
+        config_file.iomap_size = 4096;
+    }
 
     // Done!
     printf("  Parse result:\n");
-    printf("  dropPrivs_username = '%s'\n", config_file.dropPrivs_username);
-    printf("  dropPrivs_uid      = '%d'\n", config_file.dropPrivs_uid);
-    printf("  dropPrivs_gid      = '%d'\n", config_file.dropPrivs_gid);
+    printf("  - dropPrivs_username = '%s'\n", config_file.dropPrivs_username);
+    printf("  - dropPrivs_uid      = '%d'\n", config_file.dropPrivs_uid);
+    printf("  - dropPrivs_gid      = '%d'\n", config_file.dropPrivs_gid);
+    printf("  - allowQuit          =  %s\n",  config_file.allowQuit==1 ? "YES" : "NO");
+    printf("  - iomap_size         =  %d\n",  config_file.iomap_size);
+
     return 0; //success
 }
 
