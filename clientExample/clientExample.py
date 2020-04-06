@@ -24,6 +24,8 @@ if __name__ == "__main__":
     #cli.call_metaAll()
 
     #Address of thermometer value
+    # This is a PT100 on channel 1 of a EL3204,
+    # which is mounted on the first slot after the EL1100 coupler.
     address_ch = 2
     address_idx = 0x6000
     address_subidx = 0x11
