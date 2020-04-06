@@ -122,7 +122,7 @@ int parseConfigFile() {
 
     // Initialize
     config_file.dropPrivs_username = NULL;
-    config_file.allowQuit          = -1;
+    config_file.allowQuit          = 2; //On a rPI, -1 -> 256; 256 != -1
     config_file.iomap_size         = -1;
     config_file.slaveInit          = malloc(sizeof(struct slave_init_cmd));
     memset(config_file.slaveInit, 0, sizeof(struct slave_init_cmd));
@@ -169,7 +169,7 @@ int parseConfigFile() {
 
         gotHits = sscanf(tmp, "ALLOWQUIT %s", parseBuff);
         if (gotHits>0) {
-            if (config_file.allowQuit != -1) {
+            if (config_file.allowQuit != 2) {
                 fprintf(stderr, "Error in parseConfigFile(), got two ALLOWQUIT!\n");
                 return 1;
             }
@@ -244,7 +244,7 @@ int parseConfigFile() {
     config_file.dropPrivs_uid = s_passw->pw_uid;
     config_file.dropPrivs_gid = s_passw->pw_gid;
 
-    if (config_file.allowQuit == -1) {
+    if (config_file.allowQuit == 2) {
         config_file.allowQuit = 0; // Default: don't allow 'quit' command
     }
 

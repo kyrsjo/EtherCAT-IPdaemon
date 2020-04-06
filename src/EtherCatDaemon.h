@@ -34,7 +34,7 @@ struct config_file_data {
     uid_t dropPrivs_uid;
     gid_t dropPrivs_gid;
 
-    // true(1) or false(0)
+    // true(1), false(0), uninitialized(2)
     char allowQuit;
 
     //Size of IOmap allocation [bytes]
