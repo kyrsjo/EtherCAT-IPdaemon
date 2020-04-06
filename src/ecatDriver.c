@@ -563,6 +563,14 @@ void ecat_driver(char* ifname) {
 
             ec_configdc();
 
+            //Apply any INITIALIZERs
+            struct slave_init_cmd* slaveInit_tail = config_file.slaveInit;
+            while(slaveInit_tail->next != NULL){
+                size_t numBytes = sizeof(slaveInit_tail->value);
+                ec_SDOwrite(slaveInit_tail->slaveIdx, slaveInit_tail->idx, slaveInit_tail->subidx,
+                            FALSE, numBytes, &(slaveInit_tail->value), EC_TIMEOUTSAFE);
+                slaveInit_tail = slaveInit_tail->next;
+            }
             pthread_mutex_lock(&printf_lock);
             printf("Slaves mapped, state to SAFE_OP.\n");
             pthread_mutex_unlock(&printf_lock);
