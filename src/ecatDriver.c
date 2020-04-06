@@ -23,7 +23,7 @@ struct mappings_PDO* mapping_out = NULL; // Outputs, i.e. setting of voltages, a
 struct mappings_PDO* mapping_in  = NULL; // Inputs, i.e. reading of voltages, encoders, temperatures etc.
 
 // File-global data ************************************************************************
-char IOmap[4096]; //TODO: Verify map size at runtime
+char* IOmap;
 
 OSAL_THREAD_HANDLE thread_PLCwatch; // Slave error handling (disconnect etc.)
 
@@ -546,7 +546,20 @@ void ecat_driver(char* ifname) {
             printf("%d slaves found and configured.\n",ec_slavecount);
             pthread_mutex_unlock(&printf_lock);
 
-            ec_config_map(&IOmap); // fills ec_slave and more.
+            IOmap = malloc(config_file.iomap_size*sizeof(char));
+            memset(IOmap,0,config_file.iomap_size); // Expected to be initialized on first ec_send_processdata()
+
+            int iomap_size = ec_config_map(IOmap); // fills ec_slave and more.
+            pthread_mutex_lock(&printf_lock);
+            printf("Generated IOmap has size %d, configured iomap_size = %d\n",
+                    iomap_size, config_file.iomap_size);
+            if (iomap_size > config_file.iomap_size) {
+                fprintf(stderr,
+                    "Error in setup_mapping(): generated IOmap size  > configured iomap_size\n");
+                pthread_mutex_unlock(&printf_lock);
+                exit(1);
+            }
+            pthread_mutex_unlock(&printf_lock);
 
             ec_configdc();
 
