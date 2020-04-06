@@ -76,7 +76,7 @@ void chatThread(void* ptr) {
         memset(buff_out,0,BUFFLEN);
 
         int numBytes = read(myThread->connfd, buff_in, BUFFLEN);
-        if (numBytes >= BUFFLEN) {
+        if (numBytes >= BUFFLEN || buff_in[BUFFLEN-1] != '\0') {
             //Note: Last byte in buff should always be \0.
             pthread_mutex_lock(&printf_lock);
             fprintf(stderr, "ERROR, message too long");
