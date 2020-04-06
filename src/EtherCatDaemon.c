@@ -216,6 +216,9 @@ int parseConfigFile() {
             memset(slaveInit_tail, 0, sizeof(struct slave_init_cmd));
             slaveInit_tail->next = NULL;
             continue;
+            //TODO: This works well with value being an uint16,
+            // but there are many types to choose from.
+            // THIS IS CURRENTLY UNSUPPORTED AND UNLIKELY TO GO OVER WELL!!!
         }
         memset(slaveInit_tail, 0, sizeof(struct slave_init_cmd));
         slaveInit_tail->next = NULL;
